@@ -1,8 +1,12 @@
 //! Measure input→video latency and real motion frame rate.
 //! Moves the MiSTer's mouse a little (no clicks) and watches the NDI video
 //! for the change.
-//! cargo run --release -p kvms-core --example latency_probe -- <mister-ip> "OBSPC (MiSTer-1)"
+//! cargo run --release -p kvms-core --example latency_probe [-- <mister-host> "<ndi source>"]
+//! Defaults come from local.settings.json.
 use std::sync::Arc;
+#[path = "support/settings.rs"]
+mod settings;
+
 use std::time::{Duration, Instant};
 
 use kvms_core::ndi::{self, Captured, Receiver};
@@ -41,13 +45,12 @@ fn changed(a: &[u8], b: &[u8]) -> usize {
 }
 
 fn main() {
-    let mut args = std::env::args().skip(1);
-    let host = args.next().unwrap_or("<mister-ip>".into());
-    let source = args.next().unwrap_or("OBSPC (MiSTer-1)".into());
+    let settings = settings::Settings::load();
+    let (host, source) = (settings.mister_host(), settings.ndi_source());
 
     let ndi = ndi::ndi().unwrap_or_else(|e| panic!("{e}"));
     let rx = Receiver::new(ndi, &source, "", "kvms-latency").expect("receiver");
-    let session = MisterSession::new(host, 8182, Arc::new(Quiet));
+    let session = MisterSession::new(host, settings.mister_port(), Arc::new(Quiet));
     std::thread::sleep(Duration::from_secs(2));
     assert!(session.stats().connected, "mrext not connected");
 

@@ -1,0 +1,5 @@
+{
+  "mister_host": "192.168.1.50",
+  "mister_port": 8182,
+  "ndi_source": "OBSPC (MiSTer-1)"
+}

@@ -34,7 +34,9 @@ The app is written to `build/MiSTerKVMS.app`. It's signed with your "Apple Devel
 
 For a universal build (needs rustup with `aarch64-apple-darwin` and `x86_64-apple-darwin`): `UNIVERSAL=1 scripts/build-mac.sh`. Package a drag-to-install DMG with `scripts/package-dmg.sh build/MiSTerKVMS.dmg`.
 
-Core tests: `cargo test -p kvms-core`. Connection probe (sends no input): `cargo run -p kvms-core --example probe -- <mister-ip>`.
+Core tests: `cargo test -p kvms-core`.
+
+The tools in `core/examples` (connection probe, NDI probe, latency and predictive-cursor checks) read your MiSTer address and NDI source from `local.settings.json` in the repo root. Copy `local.settings.example.json` to start; the real file is git-ignored so your network details stay out of the repo. Arguments on the command line override it. For example, `cargo run -p kvms-core --example probe` connects and prints status without sending any input.
 
 ## Using it
 

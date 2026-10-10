@@ -6,3 +6,6 @@
 /apple/Sources/kvms_coreFFI/include/kvms_coreFFI.h
 /apple/Sources/kvms_coreFFI/include/module.modulemap
 .DS_Store
+
+# Personal test settings (MiSTer/OBS addresses); see local.settings.example.json
+/local.settings.json

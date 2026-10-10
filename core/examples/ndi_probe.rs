@@ -1,14 +1,19 @@
 //! List NDI sources, then receive one for a few seconds and print what arrives.
-//! cargo run --release -p kvms-core --example ndi_probe -- "MACHINE (Source)"
+//! cargo run --release -p kvms-core --example ndi_probe [-- "<ndi source>"]
+//! Without an argument: ndi_source from local.settings.json, else the first source found.
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use kvms_core::ndi::{self, Captured};
+#[path = "support/settings.rs"]
+mod settings;
+
 
 fn main() {
     let ndi = ndi::ndi().unwrap_or_else(|e| panic!("{e}"));
     println!("NDI {} from {}", ndi.version, ndi.path.display());
     let sources = ndi::find_sources(ndi, "", 2000);
     println!("sources: {sources:?}");
-    let Some(name) = std::env::args().nth(1).or_else(|| sources.first().cloned()) else { return };
+    let configured = settings::Settings::load().ndi_source;
+    let Some(name) = Some(configured).filter(|s| !s.is_empty()).or_else(|| sources.first().cloned()) else { return };
     let rx = ndi::Receiver::new(ndi, &name, "", "kvms-probe").expect("receiver");
     let start = Instant::now();
     let (mut frames, mut audio, mut ages) = (0u32, 0u32, Vec::new());
