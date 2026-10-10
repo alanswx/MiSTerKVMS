@@ -15,6 +15,7 @@ struct MiSTerKVMSApp: App {
                 .frame(minWidth: 900, minHeight: 600)
         }
         .commands {
+            CommandGroup(replacing: .appInfo) { AboutCommand() }
             CommandMenu("Session") {
                 Button("Capture Input") { controller.startCapture() }
                     .keyboardShortcut("k", modifiers: [.command, .shift])
@@ -37,6 +38,12 @@ struct MiSTerKVMSApp: App {
                     .keyboardShortcut("i", modifiers: [.command, .shift])
             }
         }
+
+        Window("About MiSTerKVMS", id: AboutView.windowID) {
+            AboutView()
+        }
+        .windowResizability(.contentSize)
+        .windowStyle(.hiddenTitleBar)
     }
 }
 

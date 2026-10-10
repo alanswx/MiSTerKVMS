@@ -8,6 +8,8 @@
 	<string>MiSTerKVMS</string>
 	<key>CFBundleDisplayName</key>
 	<string>MiSTerKVMS</string>
+	<key>CFBundleIconFile</key>
+	<string>AppIcon</string>
 	<key>CFBundleExecutable</key>
 	<string>MiSTerKVMS</string>
 	<key>CFBundlePackageType</key>

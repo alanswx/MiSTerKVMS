@@ -59,6 +59,11 @@ Every push to `main` builds a universal DMG and publishes a GitHub release (`.gi
 
 Without them the release is ad-hoc signed and not notarized.
 
+## Credits
+
+- **MiSTer-Kun** mascot (in the app icon): original design by HeWhoisRed, a gift to the MiSTer community; remastered artwork from [baxysquare/mister_kun](https://github.com/baxysquare/mister_kun). See [apple/Icon/CREDITS.md](apple/Icon/CREDITS.md).
+- [MiSTer FPGA](https://github.com/MiSTer-devel/Main_MiSTer/wiki), [mrext](https://github.com/wizzomafizzo/mrext), [OBS Studio](https://obsproject.com) and [DistroAV](https://github.com/DistroAV/DistroAV).
+
 ## License
 
 MIT. NDI® is a registered trademark of Vizrt NDI AB; see <https://ndi.video>.
