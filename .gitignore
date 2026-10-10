@@ -1,0 +1,7 @@
+/target/
+/build/
+/apple/.build/
+/apple/Sources/KVMSCore/Generated/
+/apple/Sources/kvms_coreFFI/include/kvms_coreFFI.h
+/apple/Sources/kvms_coreFFI/include/module.modulemap
+.DS_Store

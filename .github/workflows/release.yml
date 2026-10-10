@@ -1,0 +1,125 @@
+name: Build & Release
+
+# Every push to main publishes a release. The version is MAJOR.MINOR from
+# Cargo.toml plus an auto-incremented patch (0.9.0, 0.9.1, ...). Bump the
+# version in Cargo.toml to start a new series (e.g. 0.10.0, 1.0.0).
+# Pull requests only build and test.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: macos-15
+    env:
+      HAS_CERT: ${{ secrets.MACOS_CERT_P12 != '' }}
+      HAS_NOTARY: ${{ secrets.APPLE_API_KEY_P8 != '' }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Rust toolchain (both Mac architectures)
+        run: |
+          rustup toolchain install stable --profile minimal \
+            --target aarch64-apple-darwin --target x86_64-apple-darwin
+          rustup default stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Test core
+        run: cargo test -p kvms-core
+
+      - name: Work out version
+        id: version
+        run: |
+          base=$(sed -n 's/^version = "\([0-9]*\.[0-9]*\)\..*"/\1/p' Cargo.toml | head -1)
+          last=$(git tag -l "v$base.*" | sed "s/^v$base\.//" | grep -E '^[0-9]+$' | sort -n | tail -1 || true)
+          if [ -z "$last" ]; then patch=0; else patch=$((last + 1)); fi
+          echo "version=$base.$patch" >> "$GITHUB_OUTPUT"
+          echo "Version $base.$patch"
+
+      - name: Import Developer ID certificate
+        id: cert
+        if: env.HAS_CERT == 'true'
+        env:
+          MACOS_CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
+          MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+        run: |
+          keychain="$RUNNER_TEMP/build.keychain-db"
+          kc_pass=$(openssl rand -base64 24)
+          security create-keychain -p "$kc_pass" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$kc_pass" "$keychain"
+          echo "$MACOS_CERT_P12" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security import "$RUNNER_TEMP/cert.p12" -k "$keychain" -P "$MACOS_CERT_PASSWORD" -T /usr/bin/codesign
+          rm "$RUNNER_TEMP/cert.p12"
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$kc_pass" "$keychain"
+          security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '"')
+          identity=$(security find-identity -v -p codesigning "$keychain" | grep "Developer ID Application" | head -1 | sed 's/.*"\(.*\)"/\1/')
+          echo "identity=$identity" >> "$GITHUB_OUTPUT"
+
+      - name: Build universal app
+        env:
+          UNIVERSAL: "1"
+          VERSION: ${{ steps.version.outputs.version }}
+          BUILD_NUMBER: ${{ github.run_number }}
+          SIGN_IDENTITY: ${{ steps.cert.outputs.identity || '-' }}
+        run: scripts/build-mac.sh
+
+      - name: Package DMG
+        env:
+          SIGN_IDENTITY: ${{ steps.cert.outputs.identity }}
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+          NOTARY_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          NOTARY_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
+        run: |
+          if [ "$HAS_NOTARY" = "true" ] && [ "$HAS_CERT" = "true" ]; then
+            export NOTARY_KEY_PATH="$RUNNER_TEMP/notary.p8"
+            echo "$APPLE_API_KEY_P8" | base64 --decode > "$NOTARY_KEY_PATH"
+          fi
+          scripts/package-dmg.sh "build/MiSTerKVMS-${{ steps.version.outputs.version }}.dmg"
+          rm -f "$RUNNER_TEMP/notary.p8"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: MiSTerKVMS-${{ steps.version.outputs.version }}
+          path: build/MiSTerKVMS-*.dmg
+
+      - name: Publish release
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          if [ "$HAS_CERT" = "true" ] && [ "$HAS_NOTARY" = "true" ]; then
+            signing="Signed with Developer ID and notarized by Apple."
+          else
+            signing="**Not notarized:** after copying to Applications, right-click the app → Open the first time (or run \`xattr -dr com.apple.quarantine /Applications/MiSTerKVMS.app\`)."
+          fi
+          cat > "$RUNNER_TEMP/notes.md" <<EOF
+          Universal app (Apple Silicon + Intel), macOS 14 or later. Open the DMG and drag **MiSTerKVMS** to **Applications**.
+
+          $signing
+
+          Requirements: [NDI Tools or the NDI Runtime](https://ndi.video/tools/) on the Mac, [mrext Remote](https://github.com/wizzomafizzo/mrext) on the MiSTer, and OBS with the [DistroAV](https://github.com/DistroAV/DistroAV) NDI plugin. See the [setup guide](https://github.com/${{ github.repository }}/blob/main/docs/SETUP-NDI.md).
+
+          NDI® is a registered trademark of Vizrt NDI AB.
+          EOF
+          gh release create "v$VERSION" "build/MiSTerKVMS-$VERSION.dmg" \
+            --target "$GITHUB_SHA" --title "MiSTerKVMS $VERSION" \
+            --notes-file "$RUNNER_TEMP/notes.md" --generate-notes
+
+      - name: Clean up keychain
+        if: always() && env.HAS_CERT == 'true'
+        run: security delete-keychain "$RUNNER_TEMP/build.keychain-db" || true
