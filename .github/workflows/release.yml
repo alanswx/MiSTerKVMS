@@ -23,7 +23,8 @@ jobs:
     runs-on: macos-15
     env:
       HAS_CERT: ${{ secrets.MACOS_CERT_P12 != '' }}
-      HAS_NOTARY: ${{ secrets.APPLE_API_KEY_P8 != '' }}
+      # Notarizing needs the key, its ID and the issuer ID.
+      HAS_NOTARY: ${{ secrets.APPLE_API_KEY_P8 != '' && secrets.APPLE_API_KEY_ID != '' && secrets.APPLE_API_ISSUER_ID != '' }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -104,6 +105,8 @@ jobs:
         run: |
           if [ "$HAS_CERT" = "true" ] && [ "$HAS_NOTARY" = "true" ]; then
             signing="Signed with Developer ID and notarized by Apple."
+          elif [ "$HAS_CERT" = "true" ]; then
+            signing="Signed with Developer ID but **not notarized**: macOS will warn the first time; right-click the app → Open."
           else
             signing="**Not notarized:** after copying to Applications, right-click the app → Open the first time (or run \`xattr -dr com.apple.quarantine /Applications/MiSTerKVMS.app\`)."
           fi
