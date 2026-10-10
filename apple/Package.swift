@@ -3,7 +3,8 @@ import Foundation
 import PackageDescription
 
 // Built by scripts/build-mac.sh, which runs cargo first. KVMS_RUST_LIB points
-// at a universal (lipo'd) library for release builds.
+// at the library for the architecture being built (universal builds run once
+// per architecture).
 let rustLib = Context.environment["KVMS_RUST_LIB"] ?? URL(fileURLWithPath: #filePath)
     .deletingLastPathComponent()
     .appendingPathComponent("../target/release/libkvms_core.a")

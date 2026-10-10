@@ -27,17 +27,10 @@ echo "==> Rust core ($VERSION build $BUILD_NUMBER)"
 if [[ "${UNIVERSAL:-}" == "1" ]]; then
   ARCHS=(aarch64-apple-darwin x86_64-apple-darwin)
   for t in "${ARCHS[@]}"; do cargo build --release -p kvms-core --target "$t"; done
-  mkdir -p target/universal
-  lipo -create -output target/universal/libkvms_core.a \
-    target/aarch64-apple-darwin/release/libkvms_core.a \
-    target/x86_64-apple-darwin/release/libkvms_core.a
-  export KVMS_RUST_LIB="$ROOT/target/universal/libkvms_core.a"
   BINDINGS_LIB=target/aarch64-apple-darwin/release/libkvms_core.dylib
-  SWIFT_ARCH=(--arch arm64 --arch x86_64)
 else
   cargo build --release -p kvms-core
   BINDINGS_LIB=target/release/libkvms_core.dylib
-  SWIFT_ARCH=()
 fi
 
 echo "==> Swift bindings"
@@ -49,8 +42,23 @@ cp target/uniffi-swift/kvms_coreFFI.h apple/Sources/kvms_coreFFI/include/
 cp target/uniffi-swift/kvms_coreFFI.modulemap apple/Sources/kvms_coreFFI/include/module.modulemap
 
 echo "==> Swift app"
-(cd apple && swift build -c release ${SWIFT_ARCH[@]+"${SWIFT_ARCH[@]}"})
-BIN=$(cd apple && swift build -c release ${SWIFT_ARCH[@]+"${SWIFT_ARCH[@]}"} --show-bin-path)/MiSTerKVMS
+if [[ "${UNIVERSAL:-}" == "1" ]]; then
+  # One build per architecture (multi-arch SwiftPM builds use a different
+  # build system that rejects per-target language modes), then lipo.
+  for pair in arm64:aarch64-apple-darwin x86_64:x86_64-apple-darwin; do
+    arch=${pair%%:*}; triple=${pair#*:}
+    (cd apple && KVMS_RUST_LIB="$ROOT/target/$triple/release/libkvms_core.a" \
+      swift build -c release --arch "$arch" --scratch-path ".build-$arch")
+  done
+  mkdir -p target/universal
+  BIN=target/universal/MiSTerKVMS
+  lipo -create -output "$BIN" \
+    "$(cd apple && swift build -c release --arch arm64 --scratch-path .build-arm64 --show-bin-path)/MiSTerKVMS" \
+    "$(cd apple && swift build -c release --arch x86_64 --scratch-path .build-x86_64 --show-bin-path)/MiSTerKVMS"
+else
+  (cd apple && swift build -c release)
+  BIN=$(cd apple && swift build -c release --show-bin-path)/MiSTerKVMS
+fi
 
 echo "==> Bundle"
 rm -rf "$APP"
