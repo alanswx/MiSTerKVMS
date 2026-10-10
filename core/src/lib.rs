@@ -6,6 +6,7 @@ pub mod input;
 pub mod keymap;
 pub mod ndi;
 pub mod session;
+pub mod text;
 pub mod video;
 
 pub use input::{InputSettings, KeyResult, MouseButton};

@@ -249,6 +249,14 @@ Resolved: Q-F → D14 (no required ini changes), Q-G → D15 (MIT), Q-H → D16 
 - CLI check against `OBSPC (MiSTer-1)`: 1920×1080 BGRA at 59.9 fps, 0 dropped, 48 kHz stereo audio.
 - Found: the OBS PC's clock is ~2.1 s off the Mac's, so NDI "frame age" can't be trusted until Windows time sync is fixed. The overlay says so instead of showing a bogus number.
 
+### Since then
+- **Predictive cursor** (green while ahead, black when synced, amber when lost), with latency/gain learned over a rolling minute and saved per host. **Raw mouse input** option (no double acceleration).
+- **Recording** to MP4 (H.264 + AAC) through the core's `MediaSink` hook and AVFoundation.
+- **`kvms` CLI** for core development: status, screenshots (capture or MiSTer-native), recording, frames, typing, key combos, mouse, wait-for-change, load-core. Ships inside the app.
+- App **icon** (MiSTer-Kun on a retro computer) and **About** window with credits.
+- **Release pipeline:** universal DMG on every push to `main`, optional Developer ID signing and notarization.
+- **Port plans:** [PORTING.md](PORTING.md), [PORT-WINDOWS.md](PORT-WINDOWS.md), [PORT-LINUX.md](PORT-LINUX.md).
+
 ## 9. Next steps
 
 1. **OBS PC**: install DistroAV and add an NDI filter to the HDMI-direct MiSTer source ([SETUP-NDI.md](SETUP-NDI.md)). Verify on the Mac with NDI Video Monitor.

@@ -26,11 +26,16 @@ export MACOSX_DEPLOYMENT_TARGET=14.0
 echo "==> Rust core ($VERSION build $BUILD_NUMBER)"
 if [[ "${UNIVERSAL:-}" == "1" ]]; then
   ARCHS=(aarch64-apple-darwin x86_64-apple-darwin)
-  for t in "${ARCHS[@]}"; do cargo build --release -p kvms-core --target "$t"; done
+  for t in "${ARCHS[@]}"; do cargo build --release -p kvms-core -p kvms-cli --target "$t"; done
+  mkdir -p target/universal
+  lipo -create -output target/universal/kvms \
+    target/aarch64-apple-darwin/release/kvms target/x86_64-apple-darwin/release/kvms
+  CLI_BIN=target/universal/kvms
   BINDINGS_LIB=target/aarch64-apple-darwin/release/libkvms_core.dylib
 else
-  cargo build --release -p kvms-core
+  cargo build --release -p kvms-core -p kvms-cli
   BINDINGS_LIB=target/release/libkvms_core.dylib
+  CLI_BIN=target/release/kvms
 fi
 
 echo "==> Swift bindings"
@@ -64,6 +69,8 @@ echo "==> Bundle"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN" "$APP/Contents/MacOS/MiSTerKVMS"
+# The command-line tool ships inside the app (signed and notarized with it).
+cp "$CLI_BIN" "$APP/Contents/MacOS/kvms"
 cp apple/Info.plist "$APP/Contents/Info.plist"
 cp apple/Icon/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
 /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VERSION" "$APP/Contents/Info.plist"
@@ -73,6 +80,8 @@ SIGN_ARGS=(--force --sign "$SIGN_IDENTITY")
 if [[ "$SIGN_IDENTITY" == Developer\ ID* ]]; then
   SIGN_ARGS+=(--options runtime --timestamp --entitlements apple/MiSTerKVMS.entitlements)
 fi
+# Nested executables are signed before the bundle.
+codesign "${SIGN_ARGS[@]}" --identifier io.github.misterkvms.kvms "$APP/Contents/MacOS/kvms"
 codesign "${SIGN_ARGS[@]}" "$APP"
 lipo -archs "$APP/Contents/MacOS/MiSTerKVMS" | sed 's/^/architectures: /'
 echo "Built $APP"

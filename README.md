@@ -2,7 +2,7 @@
 
 A KVM-style desktop app for [MiSTer FPGA](https://github.com/MiSTer-devel/Main_MiSTer/wiki): keyboard and mouse go to MiSTer through [mrext Remote](https://github.com/wizzomafizzo/mrext), and video/audio come from OBS Studio over NDI®.
 
-Status: 0.9 (early). Keyboard/mouse via mrext, NDI video and audio, scaling/zoom/auto-crop, recording to MP4, and an experimental predictive cursor that hides the capture lag. See [docs/PLANNING.md](docs/PLANNING.md) and [docs/SETUP-NDI.md](docs/SETUP-NDI.md).
+Status: 0.9 (early). Keyboard/mouse via mrext, NDI video and audio, scaling/zoom/auto-crop, recording to MP4, and an experimental predictive cursor that hides the capture lag. See [docs/PLANNING.md](docs/PLANNING.md), [docs/SETUP-NDI.md](docs/SETUP-NDI.md), and the Windows/Linux port plans in [docs/PORTING.md](docs/PORTING.md).
 
 ## Install
 
@@ -44,6 +44,34 @@ The tools in `core/examples` (connection probe, NDI probe, latency and predictiv
 - **Release**: **Right ⌘ + Right ⌥ + Esc**.
 - **F12** opens the MiSTer menu.
 - **⌥-click** sends a middle click (configurable per host).
+
+## Command-line tool (`kvms`)
+
+`kvms` drives a MiSTer from scripts, for testing and debugging cores: screenshots, recordings, typing, key combos, mouse, and loading a freshly built core. It ships inside the app; to put it on your PATH:
+
+```bash
+sudo ln -sf /Applications/MiSTerKVMS.app/Contents/MacOS/kvms /usr/local/bin/kvms
+```
+
+It reads the MiSTer address and NDI source from `local.settings.json` (searched from the current folder upwards; or `--settings`, `--mister`, `--ndi`). Every command prints one line of JSON.
+
+| Command | What it does |
+|---|---|
+| `kvms status` | Core/game running, mrext and NDI reachable |
+| `kvms screenshot out.png` | Current picture from the capture, borders cropped (`--full` keeps them) |
+| `kvms screenshot --native out.png` | MiSTer's own screenshot: the core's native resolution, pixel-exact (also saved on the MiSTer) |
+| `kvms record 10s out.mp4` | Video + audio (needs `ffmpeg`); `out.wav` for audio only |
+| `kvms frames 5s dir/` | Every changed frame as PNG (`--all` keeps repeats) |
+| `kvms type 'LOAD "*",8,1\n'` | Type text (US layout); `--delay` / `--hold` in ms for slow machines |
+| `kvms key ctrl+alt+del` | Key or combo; `kvms key menu` opens the MiSTer menu (F12) |
+| `kvms mouse move 10 -5` / `kvms mouse click right` | Mouse |
+| `kvms wait-for-change --timeout 30s` | Block until the screen changes; `--until-still 2s` waits until it settles |
+| `kvms load-core build/MyCore.rbf` | Copy over SSH to `/media/fat/_Development` and load it |
+| `kvms sources` | List NDI sources |
+
+A typical test loop: `kvms load-core out.rbf && kvms wait-for-change --until-still 3s --timeout 60s && kvms type 'dir\n' && kvms screenshot --native result.png`.
+
+Optional settings for the CLI: `obs_host` (if NDI discovery can't find the OBS PC), `ssh_user` (default `root`), `core_dest`, `type_delay_ms`, `type_hold_ms`.
 
 ## Releases
 
