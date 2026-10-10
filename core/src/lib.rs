@@ -10,7 +10,7 @@ pub mod video;
 
 pub use input::{InputSettings, KeyResult, MouseButton};
 pub use session::{ConnectionState, InputStats, MisterSession, SessionObserver};
-pub use video::{DisplaySettings, ScaleMode, VideoError, VideoSession, VideoStats};
+pub use video::{DisplaySettings, MediaSink, ScaleMode, VideoError, VideoSession, VideoStats};
 
 /// Default mrext Remote port.
 #[uniffi::export]

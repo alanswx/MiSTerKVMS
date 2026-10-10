@@ -92,6 +92,19 @@ pub struct VideoStats {
     pub cursor_fit_samples: u32,
 }
 
+/// Receives the raw stream for recording. Implemented by the shell with the
+/// platform's encoder (AVFoundation on macOS). Called on the receive thread;
+/// keep it quick.
+#[uniffi::export(with_foreign)]
+pub trait MediaSink: Send + Sync {
+    /// One BGRA video frame. `data` is a pointer to the first pixel, valid
+    /// only for the duration of the call; rows are `stride` bytes apart.
+    /// `timestamp` is in 100 ns units (same clock as audio).
+    fn video_frame(&self, data: u64, stride: u32, width: u32, height: u32, timestamp: i64);
+    /// Interleaved float audio.
+    fn audio_frame(&self, samples: Vec<f32>, channels: u32, sample_rate: u32, timestamp: i64);
+}
+
 /// What the predictive cursor learned, to restore in the next session.
 #[derive(Debug, Clone, uniffi::Record)]
 pub struct CursorModel {
@@ -172,6 +185,9 @@ struct Shared {
     counters: Mutex<Counters>,
     audio: Mutex<Option<AudioOut>>,
     cursor: Mutex<CursorTracker>,
+    /// Recording: where frames go, and the crop fixed when recording started
+    /// (so the file doesn't change size when borders are re-detected).
+    sink: Mutex<Option<(Arc<dyn MediaSink>, Option<Crop>)>>,
 }
 
 /// Mouse movement from the input session → predictive cursor (+ redraw).
@@ -220,6 +236,7 @@ impl VideoSession {
             counters: Mutex::new(Counters { state: "searching".into(), ..Default::default() }),
             audio: Mutex::new(None),
             cursor: Mutex::new(CursorTracker::default()),
+            sink: Mutex::new(None),
         });
 
         match AudioOut::start() {
@@ -307,6 +324,11 @@ impl VideoSession {
     pub fn set_pointer_captured(&self, captured: bool) {
         self.shared.cursor.lock().unwrap().set_captured(captured);
         self.redraw();
+    }
+
+    /// Start (Some) or stop (None) passing frames and audio to a recorder.
+    pub fn set_media_sink(&self, sink: Option<Arc<dyn MediaSink>>) {
+        *self.shared.sink.lock().unwrap() = sink.map(|s| (s, None));
     }
 
     pub fn cursor_model(&self) -> CursorModel {
@@ -445,6 +467,12 @@ fn receive_loop(ndi: &'static ndi::Ndi, source: String, extra_ip: String, shared
                 shared.cursor.lock().unwrap().set_bounds(bounds);
                 detector.process(data, stride as usize, w, h, &shared.cursor, arrived);
 
+                let timestamp = match v.frame.timestamp {
+                    ndi::sys::NDIlib_recv_timestamp_undefined => now_100ns(),
+                    t => t,
+                };
+                record_video(&shared, data, stride, w, h, timestamp);
+
                 let mut slot = shared.slot.lock().unwrap();
                 let mut buf = slot
                     .frame
@@ -474,6 +502,9 @@ fn receive_loop(ndi: &'static ndi::Ndi, source: String, extra_ip: String, shared
                 c.state = "connected".into();
             }
             Captured::Audio(a) => {
+                if a.frame.FourCC == ndi::sys::NDIlib_FourCC_audio_type_FLTP {
+                    record_audio(&shared, &a);
+                }
                 if let Some(out) = shared.audio.lock().unwrap().as_ref() {
                     if !out.is_muted() && a.frame.FourCC == ndi::sys::NDIlib_FourCC_audio_type_FLTP {
                         let planes: Vec<&[f32]> =
@@ -498,6 +529,47 @@ fn receive_loop(ndi: &'static ndi::Ndi, source: String, extra_ip: String, shared
             shared.counters.lock().unwrap().dropped = rx.video_performance().1;
         }
     }
+}
+
+/// Hand a frame to the recorder, cropped to the picture area that was
+/// current when recording started (or the new full frame if the source
+/// resolution changed since).
+fn record_video(shared: &Shared, data: &[u8], stride: u32, w: u32, h: u32, timestamp: i64) {
+    let mut sink = shared.sink.lock().unwrap();
+    let Some((sink, fixed)) = sink.as_mut() else { return };
+    let crop = match *fixed {
+        Some(c) if c.x + c.w <= w && c.y + c.h <= h => c,
+        _ => {
+            let c = shared.counters.lock().unwrap().crop.unwrap_or(Crop::full(w, h));
+            let c = if c.x + c.w <= w && c.y + c.h <= h { c } else { Crop::full(w, h) };
+            *fixed = Some(c);
+            c
+        }
+    };
+    // Encoders want even dimensions.
+    let (cw, ch) = (crop.w & !1, crop.h & !1);
+    let offset = crop.y as usize * stride as usize + crop.x as usize * 4;
+    let ptr = data[offset..].as_ptr() as u64;
+    sink.video_frame(ptr, stride, cw, ch, timestamp);
+}
+
+fn record_audio(shared: &Shared, a: &ndi::AudioFrame<'_>) {
+    let sink = shared.sink.lock().unwrap();
+    let Some((sink, _)) = sink.as_ref() else { return };
+    let channels = a.frame.no_channels.max(1) as usize;
+    let samples = a.frame.no_samples as usize;
+    let planes: Vec<&[f32]> = (0..channels).map(|ch| a.channel(ch)).collect();
+    let mut interleaved = Vec::with_capacity(samples * channels);
+    for i in 0..samples {
+        for plane in &planes {
+            interleaved.push(plane[i]);
+        }
+    }
+    let timestamp = match a.frame.timestamp {
+        ndi::sys::NDIlib_recv_timestamp_undefined => now_100ns(),
+        t => t,
+    };
+    sink.audio_frame(interleaved, channels as u32, a.frame.sample_rate as u32, timestamp);
 }
 
 fn render_loop(mut renderer: render::Renderer, shared: Arc<Shared>) {

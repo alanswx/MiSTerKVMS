@@ -103,6 +103,14 @@ struct SessionView: View {
                     Button { controller.zoom(by: 1.25) } label: { Label("Zoom In", systemImage: "plus.magnifyingglass") }
                 }
 
+                Button { controller.toggleRecording() } label: {
+                    Label(controller.isRecording ? "Stop Recording" : "Record",
+                          systemImage: controller.isRecording ? "stop.circle.fill" : "record.circle")
+                }
+                .foregroundStyle(controller.isRecording ? .red : .primary)
+                .help(controller.isRecording ? "Stop recording (⌘⇧R)" : "Record video and audio to Movies/MiSTerKVMS (⌘⇧R)")
+                .disabled(!controller.isRecording && controller.videoStats?.state != "connected")
+
                 Toggle(isOn: $controller.muted) {
                     Label("Mute", systemImage: controller.muted ? "speaker.slash" : "speaker.wave.2")
                 }
@@ -255,6 +263,20 @@ private struct StatusBar: View {
         HStack(spacing: 12) {
             Circle().fill(color).frame(width: 8, height: 8)
             Text(text).lineLimit(1)
+            if let since = controller.recordingSince {
+                HStack(spacing: 4) {
+                    Circle().fill(.red).frame(width: 8, height: 8)
+                    Text(timerInterval: since...Date.distantFuture, countsDown: false)
+                        .monospacedDigit()
+                }
+                .foregroundStyle(.red)
+            } else if let error = controller.recordingError {
+                Text("Recording failed: \(error)").foregroundStyle(.red).lineLimit(1)
+            } else if let last = controller.lastRecording {
+                Button("Saved \(last.lastPathComponent) · Show in Finder") { controller.showLastRecording() }
+                    .buttonStyle(.link)
+                    .lineLimit(1)
+            }
             Spacer()
             if !controller.gameRunning.isEmpty {
                 Text(controller.gameRunning).lineLimit(1).foregroundStyle(.secondary)

@@ -12,6 +12,12 @@ final class SessionController: ObservableObject {
     @Published private(set) var capturing = false
     @Published private(set) var captureMode: InputCapture.Mode?
     @Published private(set) var rawMouseActive = false
+    /// When the current recording started (nil = not recording).
+    @Published private(set) var recordingSince: Date?
+    /// Last finished recording, for "Show in Finder".
+    @Published private(set) var lastRecording: URL?
+    @Published private(set) var recordingError: String?
+    private var recorder: Recorder?
     @Published private(set) var stats: InputStats?
     /// Stats overlay: shown for a few seconds when something changes, or
     /// always when pinned.
@@ -182,7 +188,47 @@ final class SessionController: ObservableObject {
         }
     }
 
+    // MARK: - Recording
+
+    var isRecording: Bool { recordingSince != nil }
+
+    func toggleRecording() {
+        isRecording ? stopRecording() : startRecording()
+    }
+
+    func startRecording() {
+        guard !isRecording, let video, let profile else { return }
+        let recorder = Recorder(baseURL: Recorder.defaultURL(hostName: profile.name))
+        recorder.onFinished = { [weak self] result in
+            switch result {
+            case .success(let url):
+                self?.lastRecording = url
+                self?.recordingError = nil
+            case .failure(let error):
+                self?.recordingError = error.localizedDescription
+            }
+        }
+        video.setMediaSink(sink: recorder)
+        self.recorder = recorder
+        recordingSince = Date()
+        recordingError = nil
+    }
+
+    func stopRecording() {
+        guard let recorder else { return }
+        video?.setMediaSink(sink: nil)
+        recorder.stop()
+        self.recorder = nil
+        recordingSince = nil
+    }
+
+    func showLastRecording() {
+        guard let lastRecording else { return }
+        NSWorkspace.shared.activateFileViewerSelecting([lastRecording])
+    }
+
     private func stopVideo() {
+        stopRecording()
         modelSaveTimer?.invalidate()
         modelSaveTimer = nil
         saveCursorModel()

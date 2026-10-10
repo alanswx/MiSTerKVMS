@@ -2,7 +2,7 @@
 
 A KVM-style desktop app for [MiSTer FPGA](https://github.com/MiSTer-devel/Main_MiSTer/wiki): keyboard and mouse go to MiSTer through [mrext Remote](https://github.com/wizzomafizzo/mrext), and video/audio come from OBS Studio over NDI®.
 
-Status: 0.9 (early). Keyboard/mouse via mrext, NDI video and audio, scaling/zoom/auto-crop, and an experimental predictive cursor that hides the capture lag. See [docs/PLANNING.md](docs/PLANNING.md) and [docs/SETUP-NDI.md](docs/SETUP-NDI.md).
+Status: 0.9 (early). Keyboard/mouse via mrext, NDI video and audio, scaling/zoom/auto-crop, recording to MP4, and an experimental predictive cursor that hides the capture lag. See [docs/PLANNING.md](docs/PLANNING.md) and [docs/SETUP-NDI.md](docs/SETUP-NDI.md).
 
 ## Install
 

@@ -22,6 +22,11 @@ struct MiSTerKVMSApp: App {
                     .disabled(!controller.isConnected)
                 Button("Send MiSTer Menu (F12)") { controller.openMisterMenu() }
                     .disabled(!controller.isConnected)
+                Button(controller.isRecording ? "Stop Recording" : "Start Recording") { controller.toggleRecording() }
+                    .keyboardShortcut("r", modifiers: [.command, .shift])
+                    .disabled(!controller.isRecording && controller.videoStats?.state != "connected")
+                Button("Show Last Recording in Finder") { controller.showLastRecording() }
+                    .disabled(controller.lastRecording == nil)
                 Divider()
                 Button("Zoom In") { controller.zoom(by: 1.25) }
                     .keyboardShortcut("+", modifiers: .command)
