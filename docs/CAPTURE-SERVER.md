@@ -1,231 +1,256 @@
-# Capture server plan: `misterkvms-capture` + OBS plugin
+# Capture server plan: `misterkvms-capture` on the RustDesk protocol
 
-Replace NDI as the video/audio path with our own capture server, and let OBS
-*consume* from it through an optional plugin, instead of OBS owning the
-capture cards and pushing NDI.
+Replace NDI with a capture server we own, and use the **RustDesk protocol**
+for everything that talks to it: our own apps, stock RustDesk viewers
+(desktop, phone, tablet, web), the CLI and an optional OBS plugin.
+
+Decisions so far (October 2026):
+
+| # | Decision |
+|---|---|
+| R1 | The capture server owns the capture cards; OBS becomes an optional consumer through a plugin. |
+| R2 | The RustDesk protocol replaces our own: on the LAN, away from home, and for phones/tablets. No separate MiSTerKVMS protocol. |
+| R3 | The whole project moves to **AGPL-3.0** so RustDesk's code can be used anywhere in it (§2). |
+| R4 | Downscaling (e.g. to 1080p) is chosen **per viewer** (§5). |
+| R5 | NDI stays as an optional, legacy source in the apps. |
+| R6 | First, find and fix the client-side memory leak (§1). |
 
 ```
-Capture PC                                         Any computer on the LAN
-┌──────────────────────────────────────┐
-│ misterkvms-capture (Rust, headless)  │  TCP     ┌──────────────────────────┐
-│  owns the capture cards + their audio│─────────▶│ MiSTerKVMS app (mac/win/ │
-│  one stream per MiSTer               │          │ linux) via the core       │
-│  MJPEG pass-through / JPEG encode    │─────────▶│ misterkvms-cli (scripts)  │
-│  mDNS: _misterkvms._tcp              │          └──────────────────────────┘
-└───────────────▲──────────────────────┘
-                │ TCP (same protocol)
-┌───────────────┴──────────────────────┐
-│ OBS + obs-misterkvms plugin (optional)│  "MiSTerKVMS Capture" source:
-│  for streaming/recording/scenes       │  the same picture OBS used to get
-└──────────────────────────────────────┘  from the card directly
+Capture PC                                          Viewers (LAN or internet)
+┌─────────────────────────────────────────┐
+│ misterkvms-capture                      │  RustDesk   ┌───────────────────────────┐
+│  capture cards + audio ──▶ per-viewer   │  protocol   │ MiSTerKVMS apps (mac/win/  │
+│  scale ──▶ encode (HW H.264/H.265, VP9) │────────────▶│ linux): predictive cursor, │
+│  one RustDesk peer (ID) per MiSTer      │             │ integer scale, crop, stats │
+│  input from viewers ──▶ core ──▶ mrext ─┼──▶ MiSTer   ├───────────────────────────┤
+│                                         │────────────▶│ stock RustDesk viewers:    │
+└──────────────▲──────────────────────────┘             │ Windows/mac/Linux/Android/ │
+               │ direct IP on the LAN,                  │ iOS/web                    │
+               │ rendezvous + relay (hbbs/hbbr) remote  ├───────────────────────────┤
+               │                                        │ misterkvms-cli, OBS plugin │
+                                                        └───────────────────────────┘
 ```
 
-Why this way round: a capture card can only be opened by one program. If the
-server owns it, the MiSTerKVMS apps, the CLI and OBS can all watch the same
-MiSTer at once, and OBS becomes optional. Today OBS owns the card, so
-everything depends on OBS and DistroAV/NDI being healthy.
+## 1. First: the client memory leak
 
-NDI stays as an optional source for people who already run OBS + DistroAV.
+Whatever the video path, the leak has to go first; the new client would
+inherit it.
 
-Targets: macOS 14+, Windows 10/11, Linux (x86_64 + aarch64) for every piece:
-server, apps, CLI and OBS plugin.
+1. **Measure:** `misterkvms-cli soak <minutes>` runs a full `Controller`
+   session (input + video, offscreen renderer) and logs RSS, frame counts
+   and reconnects every 10 s. Run it on each OS, including against a
+   flapping source like the Mac's current NDI link.
+2. **Suspects:** allocations per NDI reconnect (frame buffers, audio ring,
+   cursor detector); the macOS shell (Metal layers per host switch, the
+   AVFoundation recorder, SwiftUI churn from the 2 Hz state events); wgpu
+   textures per resolution change; work queued while the view is occluded.
+3. **Guard:** a 10-minute soak in CI (Linux, offscreen, synthetic source)
+   that fails if memory keeps growing after warm-up.
 
-## 0. Before anything else: the client memory leak
+Done when an 8-hour soak on the Mac holds steady.
 
-The client-side leak has to be found whichever video path we use; the new
-source would otherwise inherit it.
+## 2. Relicensing to AGPL-3.0
 
-1. **Measure.** Add `misterkvms-cli soak <minutes>`: runs a full
-   `Controller` session (input + video, offscreen renderer) and logs RSS,
-   frame counts and NDI reconnects every 10 s. Run it on each OS, including
-   one run against a flapping source (your Mac's current state).
-2. **Suspects**, in order:
-   - Receiver churn: every NDI reconnect allocates; check that nothing grows
-     per reconnect (frame `Vec`s in the slot, audio ring, cursor detector).
-   - The macOS shell: a `CAMetalLayer` left per host switch (now removed on
-     switch; verify), AVFoundation recorder buffers, SwiftUI state growth
-     from the 2 Hz `Changed` events.
-   - wgpu: textures recreated per resolution change; command buffers piling
-     up when the view is occluded (`Occluded` skips present).
-3. **Fix and guard:** a soak run in CI (Linux, offscreen, synthetic source,
-   10 minutes) that fails if RSS grows more than a set amount after warm-up.
+- Replace `LICENSE`, the `license` field in every `Cargo.toml`, the About
+  boxes (all three apps) and the README.
+- **Mac App Store:** AGPL code can't ship there (Apple's terms conflict with
+  it), so decision D15's reason for MIT goes away. Direct-download DMG,
+  Windows zip/installer and Linux packages are unaffected.
+- **NDI:** the NDI runtime is proprietary. Add an *additional permission*
+  (AGPL §7) that allows using the app with the NDI runtime, which is loaded
+  at run time and never shipped as part of our code. Same for other
+  proprietary system runtimes if needed (e.g. vendor GPU encoders).
+- **Network use:** AGPL §13: anyone who offers the capture server to others
+  over a network must offer them its source. A "Source" link on the
+  server's status page and in the apps' About covers it.
+- The OBS plugin (libobs is GPL-2.0-or-later) can combine with AGPL-3.0
+  code: the plugin as a whole is distributed under AGPL-3.0.
+- All commits so far are by the project owner, so relicensing needs no
+  outside consent.
 
-Done when: 8-hour soak on the Mac with stable memory.
+## 3. Names
 
-## 1. Names
+| Piece | Name |
+|---|---|
+| Desktop apps | MiSTerKVMS |
+| Command-line tool | `misterkvms-cli` (was `kvms`; alias kept for one release) |
+| Capture server | `misterkvms-capture` |
+| OBS plugin | `obs-misterkvms` |
 
-| Piece | Name | Notes |
-|---|---|---|
-| Desktop app | MiSTerKVMS | unchanged |
-| Command-line tool | `misterkvms-cli` (was `kvms`) | `kvms` kept as an alias for one release, with a deprecation note |
-| Capture server | `misterkvms-capture` | headless; runs as a service |
-| OBS plugin | `obs-misterkvms` | separate build, GPL (see §6) |
-| Protocol | MiSTerKVMS Stream Protocol (MKSP) v1 | |
+## 4. The capture server
 
-## 2. Protocol (MKSP v1)
+### 4.1 How to build the RustDesk side
 
-Plain TCP, one connection per stream subscription. LAN only, no
-auth/TLS, like mrext (§ Security in PLANNING.md).
+RustDesk's host logic (handshake, login, permissions, video/audio services,
+QoS, rendezvous and relay, NAT hole punching) lives in the main `rustdesk`
+crate, not a library. Two ways to use it; a spike decides (milestone C3):
 
-- **Discovery:** mDNS service `_misterkvms._tcp` (TXT: server version,
-  stream names); manual `host[:port]` always works. Default port 5970.
-- **Handshake:** the client sends a JSON `hello` (protocol version, client
-  name, what it can decode); the server answers with its streams (id, name,
-  current resolution, fps, audio format). The client sends `subscribe
-  {stream, video: true, audio: true, max_fps?}`.
-- **Frames:** binary, length-prefixed:
-  `type u8 | stream u8 | flags u16 | timestamp i64 (100 ns, server clock) | len u32 | payload`.
-  - `video`: one JPEG (MJPEG frame passed through, or encoded by us) plus
-    width/height in a small prefix.
-  - `audio`: interleaved s16 or f32 PCM, 48 kHz, channel count from the
-    stream info.
-  - `format`: resolution/fps changed (MiSTer switched modes).
-  - `ping`/`pong`: keep-alive and **clock offset**, so the "frame age"
-    stat no longer depends on NTP between machines.
-- **Back-pressure:** the server never blocks capture on a slow client. Per
-  client it keeps only the newest video frame and a short audio queue; if
-  the socket is full, older video frames are dropped and counted (reported
-  in stats). Audio is never dropped silently: an overflow sends a `gap`.
-- **Versioning:** major version in `hello`; unknown frame types are skipped,
-  so later additions (H.264, metadata) don't break old clients.
+- **A. Fork RustDesk as a headless host (preferred).** Pin a release (1.4.9,
+  the version in use here) as a submodule and add a "MiSTer" mode:
+  - a capturer that reads the capture card instead of the screen (`scrap`
+    already abstracts capturers behind a trait),
+  - an input sink that sends to mrext through our core instead of
+    synthesising OS input (`server/input_service.rs`),
+  - no UI; run with a config folder per MiSTer.
+  Everything else (codecs, QoS, audio, encryption, rendezvous, relay, peer
+  IDs and passwords) comes for free. Cost: rebasing on RustDesk releases.
+- **B. Our own host on RustDesk's protocol crates** (`hbb_common`,
+  `libs/base`'s `message.proto`, `scrap` codecs). Leaner and under our
+  control, but we reimplement the handshake, login and QoS, and keep up
+  with protocol changes ourselves.
 
-Bandwidth at 1080p60: MJPEG/JPEG at quality ~85 is roughly 60–120 Mbit/s.
-That's fine on gigabit and keeps latency to about one frame (no
-inter-frame coding). H.264/HEVC through hardware encoders is a later option
-for Wi-Fi clients (§8).
+Either way: **one RustDesk peer (ID + password) per MiSTer**, so each MiSTer
+is its own device in a viewer's address book, and viewers of different
+MiSTers never interfere. One `misterkvms-capture` process hosts all of them.
 
-The protocol lives in a new crate, `mksp/`, used by the server, the core
-(client) and the OBS plugin, with round-trip tests and a fuzz target for the
-frame parser.
+### 4.2 Capture
 
-## 3. `misterkvms-capture`
+Behind one `CaptureDevice` trait (list devices/formats, open, frames with
+timestamps):
 
-A new crate `capture/`, sharing `mksp` and parts of the core (logging,
-config folder).
+| OS | API |
+|---|---|
+| Windows | Media Foundation `IMFSourceReader` (also gives hardware scaling and colour conversion) |
+| macOS | AVFoundation `AVCaptureSession` (needs Camera permission: the server ships as a signed app bundle) |
+| Linux | V4L2 |
 
-**Video capture per OS**, behind one `CaptureDevice` trait (list devices
-and formats, open with a format, deliver frames with timestamps):
+The spike also tries the `nokhwa` crate, which wraps all three. Audio from
+the card's own audio device through `cpal`; each stream pairs a video and an
+audio device. A device that drops out or fails to configure (as the UGREEN
+did in OBS) is retried with backoff; viewers see a "no signal" frame, not a
+disconnect. Resolution changes from the MiSTer are followed automatically.
 
-| OS | API | Notes |
-|---|---|---|
-| Windows | Media Foundation `IMFSourceReader` (`windows` crate) | Same API OBS uses for most cards (OBS also uses DirectShow for some; MF covers UVC and AVerMedia). |
-| macOS | AVFoundation `AVCaptureSession` (`objc2-av-foundation`) | Needs Camera permission (the usage description in Info.plist). |
-| Linux | V4L2 (`v4l` crate) | mmap streaming. |
+### 4.3 Encoding
 
-Spike first: the `nokhwa` crate wraps all three; if it gives us format
-control (pick MJPEG vs raw, exact resolution/fps) and per-frame timestamps,
-it saves most of this. If not, use the APIs directly.
+- Hardware H.264/H.265 first (NVENC, Quick Sync, AMF, VideoToolbox, VA-API
+  via RustDesk's `hwcodec`), VP9 (software) as the fallback every viewer
+  decodes.
+- **4:4:4 chroma** where encoder and viewer support it (RustDesk negotiates
+  it: `CodecAbility i444`). 4:2:0 smears coloured text and pixel art, which
+  is what most MiSTer desktops are.
+- Low-latency settings: no B-frames, short GOP, one-frame encoder delay. A
+  "LAN" quality preset with a high bitrate cap (RustDesk's quality options
+  plus a custom bitrate) for local viewing.
 
-**Formats:** prefer the card's own MJPEG (UGREEN-class USB sticks) and pass
-frames through untouched (no decode, no re-encode). Raw formats (NV12/YUY2,
-e.g. AVerMedia GC573) are JPEG-encoded per frame (`turbojpeg`, ~3–5 ms at
-1080p on one core; one encoder thread per stream).
+### 4.4 Input
 
-**Audio:** capture cards appear as a separate audio input device; capture
-with `cpal` (WASAPI / CoreAudio / ALSA). The config pairs each video device
-with its audio device (matched by name automatically when obvious).
+Viewer input arrives as RustDesk `KeyEvent`/`MouseEvent` and goes through
+the core's existing input state machine (held keys, release-all, the exit
+chord) to mrext:
 
-**Configuration:** `capture.json` in the config folder:
-`streams: [{ name: "MiSTer-SS1", video: {device, format, width, height, fps},
-audio: {device} }]`, `port`. Commands:
+- **Keyboard:** RustDesk's *Map* mode sends position codes (Windows scan
+  code, Linux key code or macOS key code, per the viewer's platform from
+  the login). We map all three to HID: Windows and Linux tables exist in
+  core; the macOS table moves from Swift to core. *Translate* mode
+  (characters, common on phones) goes through `text.rs`.
+- **Mouse:** RustDesk's *relative mouse mode* (viewers 1.4.5+) maps
+  directly to mrext's relative movement. Absolute positions (older viewers,
+  phone touch) are turned into relative moves aimed at the target, using
+  the predictive cursor's tracker, which already knows where the guest
+  pointer is on screen. Cores that support mrext's absolute `mousePos` get
+  that instead.
+- **mrext connection:** the server keeps one session per MiSTer. Viewers
+  away from home never need to reach the MiSTer directly.
 
-- `misterkvms-capture devices`: list devices and their formats (JSON).
-- `misterkvms-capture add "MiSTer-SS1" --video "UGREEN 25773" --audio auto`
-- `misterkvms-capture serve`: run (also what the service runs).
-- `misterkvms-capture install-service` / `uninstall-service`: Windows
-  service, launchd agent, or systemd user unit.
+### 4.5 Configuration and running
 
-A small status page (`http://<pc>:5970/` on the same port, sniffed by the
-first bytes) shows streams, clients, fps and drops, so headless boxes can be
-checked from a browser. A tray app or GUI editor can come later.
+`capture.json` in the config folder: streams (`name`, video/audio device,
+format), each with its MiSTer address (mrext) and RustDesk settings (ID,
+permanent password, rendezvous/relay server or LAN-only). Commands:
+`misterkvms-capture devices | add | serve | install-service`. A status page
+on a local port shows streams, viewers, fps, encoder and drops, with the
+"Source" link (§2). Services: Windows service, launchd, systemd.
 
-**Robustness:** a device that disappears or fails to configure (the
-"Video format match failed" seen in OBS with the UGREEN) is retried with
-backoff, and clients get a `format`/`gap` frame instead of a dead socket.
-Resolution changes from the MiSTer are followed automatically.
+### 4.6 Away from home
 
-## 4. Client: the core
+- RustDesk's public servers work out of the box, but **self-hosting**
+  `rustdesk-server` (hbbs/hbbr) is recommended: your own key, no
+  third-party relay. A Raspberry Pi or the capture PC itself can run it.
+- Security becomes required (until now: LAN only, none): per-MiSTer
+  permanent password, RustDesk's end-to-end encryption, and an option to
+  accept only LAN connections.
 
-- New `video::source` module: a `FrameSource` trait with the receive loop's
-  needs (next video frame as BGRA or JPEG, audio, connection state, stats).
-  Two implementations: `NdiSource` (today's code, moved) and `MkspSource`.
-- JPEG decode in the receive thread with `zune-jpeg` (pure Rust, SIMD) into
-  the existing frame slot; the renderer, auto-crop, predictive cursor,
-  recording and stats stay as they are. GPU decode is a later optimisation if
-  CPU use matters (Raspberry Pi).
-- `HostProfile` gets a source: `{ kind: "ndi", name, obsHost }` or
-  `{ kind: "capture", host, stream }`. Old profiles map to `ndi`.
-- Discovery in the host editor lists both: "Capture server streams" and
-  "NDI sources".
-- Stats overlay: per-source fields (server drops, clock-corrected age).
-- `misterkvms-cli` screenshot/record/frames work with either source.
+## 5. Per-viewer downscaling
 
-The three shells only change their host editors (source picker); the rest
-comes through the controller.
+Each viewer chooses its resolution:
 
-## 5. OBS plugin `obs-misterkvms`
+- The server advertises **SupportedResolutions** per MiSTer: native, plus
+  1080p, 720p and the integer fractions of native (4K → 1080p is exactly 2:1).
+- A viewer asks with RustDesk's **change resolution** request. Stock
+  RustDesk viewers show it in their display menu; our apps set it from a
+  per-host "Max resolution" (Native / 1080p / 720p / Auto). Auto picks 1080p
+  when the link measures below a threshold.
+- The server keeps one scale + encode pipeline per distinct resolution
+  (viewers asking for the same size share one). Scaling: exact box filter
+  for integer ratios (keeps pixel art crisp), area filter otherwise; on the
+  GPU or Media Foundation's video processor where available.
+- Encoder load rises with each distinct resolution, so the server caps how
+  many it runs at once (configurable; default 3).
 
-An OBS **source** ("MiSTerKVMS Capture"): pick a server and stream; it
-connects with MKSP and outputs the video and audio as an async source, so
-OBS scenes, filters, recording and streaming keep working while the server
-owns the card.
+## 6. Our apps as RustDesk clients
 
-- **Structure:** a C plugin shell (from `obs-plugintemplate`: CMake, builds
-  against OBS 30+ on all three OSes) that calls a small Rust static library
-  (`mksp-client` with a C ABI: connect, poll decoded frame as NV12/BGRA,
-  poll audio, stats). One protocol implementation for every client.
-- **Properties:** server (discovered list + manual), stream, "decode to
-  NV12" (cheaper for OBS) and a stats line.
-- **Optional, later:** an OBS *output/filter* that pushes OBS's own output
-  into `misterkvms-capture` as an extra stream, for people who want OBS
-  compositing in the KVM view. That would fully replace DistroAV for this
-  use.
-- **Packaging:** Windows installer/zip into the OBS plugins folder, macOS
-  `.pkg` (signed + notarised with the existing Developer ID), Linux `.deb`
-  plus a tarball; CI from the plugin template's workflows.
+- The core gets a `RustDeskSource` beside `NdiSource`: connect (direct IP on
+  the LAN, rendezvous otherwise), log in, receive video/audio, send input,
+  using the same RustDesk crates as the server.
+- Decoding: hardware where possible (VideoToolbox, Media Foundation,
+  VA-API) through `hwcodec`, VP9 through libvpx. Frames land in the
+  existing slot, so the renderer, auto-crop, predictive cursor, recording and
+  stats stay as they are.
+- Input goes over the same connection, so the apps work away from home too.
+  On the LAN the app can keep talking to mrext directly (a per-host option),
+  for the lowest input latency.
+- Host profiles get a source: `{ kind: "rustdesk", id or host, password }` or
+  the legacy `{ kind: "ndi", ... }`. The host editor lists capture-server
+  MiSTers found on the LAN and NDI sources.
+- **Build cost:** RustDesk's codec stack needs vcpkg-built native libraries
+  (libvpx, libyuv, aom, opus) on all three OSes. CI caches them; local
+  builds get a setup script.
 
-## 6. Licensing
+## 7. OBS plugin `obs-misterkvms`
 
-- Server, core, apps, CLI, `mksp`: MIT, as now.
-- The OBS plugin links libobs (GPL-2.0), so the plugin is **GPL-2.0-or-later**
-  in its own folder (`obs-plugin/`) with its own LICENSE. The MIT Rust
-  library it uses is GPL-compatible. The apps only speak the protocol to the
-  server, so they're unaffected.
-- Dropping NDI as the default also removes the NDI runtime requirement and
-  its redistribution rules for users who don't need it.
+An OBS **source** ("MiSTerKVMS Capture") that connects to a MiSTer on the
+capture server as a RustDesk client and outputs video and audio, so OBS
+scenes, recording and streaming keep working while the server owns the card.
 
-## 7. Milestones
+- A C plugin shell (from `obs-plugintemplate`, OBS 30+) over a Rust static
+  library with a small C API (the same client code as the apps).
+- On the same PC as the server it connects over loopback; a shared-memory
+  path for raw frames is a later optimisation if decode cost matters.
+- Packaging: Windows zip/installer, signed + notarised macOS `.pkg`, Linux
+  `.deb` and tarball, from the plugin template's CI.
+
+## 8. Milestones
 
 | # | Milestone | Done when |
 |---|---|---|
-| C0 | Client leak found and fixed | 8 h Mac soak stable; CI soak guard |
-| C1 | Rename CLI to `misterkvms-cli` | builds/docs/CI updated; `kvms` alias works |
-| C2 | `mksp` crate | spec in this doc, round-trip tests, fuzzed parser |
-| C3 | Capture spike | `nokhwa` vs native decided; UGREEN MJPEG pass-through and GC573 raw capture at 1080p60 on Windows |
-| C4 | `misterkvms-capture` on Windows | serve + devices + config; audio; status page; service install |
-| C5 | Core `MkspSource` | Mac/Windows/Linux apps show a server stream; latency measured vs NDI (expect equal or lower) |
-| C6 | Host editor source picker in all three apps | discovery of both kinds; profiles migrate |
-| C7 | Server on macOS and Linux | same features; Raspberry Pi 5 as a capture box tested |
-| C8 | OBS plugin (source) | Win/mac/Linux builds in CI, OBS shows the stream with audio |
-| C9 | Packaging | server in releases (zip/pkg/tarball + service), plugin installers |
-| C10 | Later | H.264 option for Wi-Fi, OBS output/filter, tray app |
+| C0 | Client leak fixed | 8 h Mac soak steady; CI soak guard |
+| C1 | AGPL-3.0 + NDI permission; CLI renamed | licence files, About boxes, README, CI updated |
+| C2 | Capture spike | UGREEN (MJPEG) and GC573 (raw) at 1080p60 on Windows via MF or `nokhwa` |
+| C3 | RustDesk host spike | fork (A) vs own host (B) decided: a stock RustDesk 1.4.9 viewer shows one MiSTer over direct IP, keyboard (Map mode) and relative mouse reach mrext |
+| C4 | `misterkvms-capture` on Windows | several MiSTers, audio, hardware encode, 4:4:4, status page, service |
+| C5 | Per-viewer resolution | SupportedResolutions + change resolution; shared pipelines; integer box filter |
+| C6 | Away from home | self-hosted hbbs/hbbr tested; passwords; LAN-only option; phone (Android/iOS) and web viewers tested |
+| C7 | Apps as RustDesk clients | Mac/Windows/Linux show a server MiSTer with all current features; latency measured against NDI |
+| C8 | Server on macOS and Linux | incl. Raspberry Pi 5 as a capture box |
+| C9 | OBS plugin | Win/mac/Linux builds; OBS shows a MiSTer with audio |
+| C10 | Packaging | server and plugin in releases |
 
-Rough size: C0 a few days; C1–C6 about two weeks; C7–C9 another two.
-C3 (capture APIs) and C8 (OBS build matrix) carry most of the risk.
+Rough size: C0 a few days; C1–C6 about three weeks; C7–C10 about three more.
+The biggest risks are C3 (RustDesk host internals) and C7 (codec build stack
+in three apps).
 
-## 8. Risks and open questions
+## 9. Risks and open questions
 
-- **Device access on macOS** needs the Camera permission for the server,
-  which means it has to be a signed app bundle (or a launchd agent inside
-  one), not a bare binary.
-- **AVerMedia GC573 on Mac/Linux:** driver support varies; the Windows PC
-  is the realistic capture box for that card.
-- **Wi-Fi clients:** MJPEG at 1080p60 is too heavy for many Wi-Fi links;
-  that's when H.264 (hardware encode on the server, VideoToolbox/MF/VA-API
-  decode on clients) is worth adding. Also a per-client `max_fps`/quality.
-- **OBS and the server on the same PC:** the plugin connects over loopback;
-  measure CPU (decode in OBS) and consider passing raw NV12 over a shared
-  memory ring for the local case later.
-- **mDNS on Windows** works without Bonjour on Windows 10+ (`mdns-sd` crate
-  does its own multicast), but firewall rules for UDP 5353 and TCP 5970 are
-  needed: the service installer adds them.
+- **Latency vs NDI:** hardware H.264 adds a few milliseconds of encode and
+  decode; measure end to end (the predictive cursor hides some of it).
+  If the LAN case turns out noticeably worse, raw frames over the protocol's
+  `rgb`/`yuv` frame types are an option for local viewers on gigabit, at a
+  bandwidth cost.
+- **Following RustDesk:** the protocol isn't a published spec and changes
+  with releases; pin a version, test stock viewers on every bump.
+- **Phones:** RustDesk's mobile viewers send absolute touches; the
+  pointer-steering in §4.4 needs testing on a real HP9K/DOS core.
+- **macOS capture box:** Camera permission and a signed bundle; capture
+  card drivers vary, so the Windows PC stays the realistic capture box.
+- **Rendezvous choice:** public RustDesk servers vs self-hosted; affects
+  privacy and what the setup guide recommends.
