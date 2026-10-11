@@ -55,7 +55,8 @@ impl ScaleMode {
 
 /// The native view the video is drawn into. Handles are pointers or ids
 /// passed as integers; they must stay valid until the session is stopped.
-#[derive(Debug, Clone, PartialEq, uniffi::Enum)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, uniffi::Enum)]
+#[serde(tag = "kind", rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum NativeSurface {
     /// An NSView (macOS). Create the session on the main thread.
     AppKit { ns_view: u64 },

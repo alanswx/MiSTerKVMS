@@ -2,6 +2,7 @@
 
 uniffi::setup_scaffolding!();
 
+pub mod capi;
 pub mod controller;
 pub mod input;
 pub mod keymap;
@@ -10,6 +11,8 @@ pub mod profiles;
 pub mod session;
 pub mod text;
 pub mod video;
+#[cfg(windows)]
+pub mod win;
 
 pub use controller::{Controller, ControllerEvent, ControllerObserver, ControllerState};
 pub use input::{InputSettings, KeyResult, MouseButton};

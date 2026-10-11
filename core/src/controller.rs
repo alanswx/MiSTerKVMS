@@ -168,6 +168,8 @@ struct Inner {
     observer: Arc<dyn ControllerObserver>,
     store: ProfileStore,
     state: Mutex<State>,
+    #[cfg(windows)]
+    win_capture: Mutex<Option<crate::win::capture::WinCapture>>,
 }
 
 #[derive(uniffi::Object)]
@@ -284,6 +286,7 @@ impl Controller {
     }
 
     pub fn close(&self) {
+        self.inner.stop_platform_capture();
         self.inner.stop_video();
         let mut s = self.inner.state.lock().unwrap();
         if let Some(session) = s.session.take() {
@@ -377,24 +380,7 @@ impl Controller {
 
     /// The shell started or stopped capturing keyboard and mouse.
     pub fn set_capturing(&self, capturing: bool) {
-        let video = {
-            let mut s = self.inner.state.lock().unwrap();
-            if s.capturing == capturing {
-                return;
-            }
-            s.capturing = capturing;
-            if capturing {
-                s.capture_on_connect = false;
-            }
-            s.video.clone()
-        };
-        if !capturing {
-            self.release_all();
-        }
-        if let Some(v) = video {
-            v.set_pointer_captured(capturing);
-        }
-        self.inner.notify(ControllerEvent::Changed);
+        self.inner.set_capturing(capturing);
     }
 
     /// A key changed state (USB HID usage). `ExitCapture` means the release
@@ -544,6 +530,49 @@ impl Controller {
     }
 }
 
+#[cfg(windows)]
+impl Controller {
+    /// Capture keyboard and mouse with the built-in Windows capture (see
+    /// `win::capture`). `window` is the app's top-level window; the rest is
+    /// the video area in screen pixels. Ends on the release chord, focus
+    /// loss, disconnect or `stop_capture`.
+    pub fn start_capture(&self, window: isize, x: i32, y: i32, width: i32, height: i32) -> Result<(), String> {
+        use crate::win::capture::{CaptureTarget, WinCapture};
+        let (session, raw_mouse) = {
+            let s = self.inner.state.lock().unwrap();
+            if s.connection != ConnectionState::Connected {
+                return Err("not connected".into());
+            }
+            let session = s.session.clone().ok_or("not connected")?;
+            (session, s.profile.as_ref().is_some_and(|p| p.raw_mouse))
+        };
+        let mut slot = self.inner.win_capture.lock().unwrap();
+        if slot.as_ref().is_some_and(|c| c.is_running()) {
+            return Ok(());
+        }
+        let target = CaptureTarget { window, x, y, width, height, raw_mouse };
+        let me = self.inner.me.clone();
+        let capture = WinCapture::start(
+            target,
+            session,
+            Box::new(move || {
+                if let Some(inner) = me.upgrade() {
+                    inner.set_capturing(false);
+                }
+            }),
+        )?;
+        *slot = Some(capture);
+        drop(slot);
+        self.inner.set_capturing(true);
+        Ok(())
+    }
+
+    pub fn stop_capture(&self) {
+        self.inner.stop_platform_capture();
+        self.inner.set_capturing(false);
+    }
+}
+
 impl Controller {
     fn with_store(store: ProfileStore, observer: Arc<dyn ControllerObserver>) -> Arc<Self> {
         let inner = Arc::new_cyclic(|me| Inner {
@@ -551,6 +580,8 @@ impl Controller {
             observer,
             store,
             state: Mutex::new(State::default()),
+            #[cfg(windows)]
+            win_capture: Mutex::new(None),
         });
         let weak = Arc::downgrade(&inner);
         thread::Builder::new()
@@ -618,6 +649,38 @@ impl State {
 impl Inner {
     fn notify(&self, event: ControllerEvent) {
         self.observer.on_event(event);
+    }
+
+    fn set_capturing(&self, capturing: bool) {
+        let (video, session) = {
+            let mut s = self.state.lock().unwrap();
+            if s.capturing == capturing {
+                return;
+            }
+            s.capturing = capturing;
+            if capturing {
+                s.capture_on_connect = false;
+            }
+            (s.video.clone(), s.session.clone())
+        };
+        if let (false, Some(session)) = (capturing, session) {
+            session.release_all();
+        }
+        if let Some(v) = video {
+            v.set_pointer_captured(capturing);
+        }
+        self.notify(ControllerEvent::Changed);
+    }
+
+    /// End platform capture (Windows), if running.
+    fn stop_platform_capture(&self) {
+        #[cfg(windows)]
+        {
+            let capture = self.win_capture.lock().unwrap().take();
+            if let Some(c) = capture {
+                c.stop();
+            }
+        }
     }
 
     /// Start video if a host with an NDI source is open and there's a view.
@@ -793,6 +856,9 @@ impl SessionObserver for Observer {
                 }
                 _ => {}
             }
+        }
+        if events.contains(&ControllerEvent::ReleaseRequested) {
+            inner.stop_platform_capture();
         }
         for e in events {
             inner.notify(e);
