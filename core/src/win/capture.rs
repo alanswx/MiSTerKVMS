@@ -20,6 +20,8 @@ use std::sync::{Arc, Once};
 use std::thread::{self, JoinHandle};
 
 use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
+use windows_sys::Win32::Graphics::Gdi::{MonitorFromPoint, MONITOR_DEFAULTTONEAREST};
+use windows_sys::Win32::UI::HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI};
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::System::Threading::GetCurrentThreadId;
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{VK_NUMLOCK, VK_PAUSE};
@@ -106,6 +108,10 @@ struct Ctx {
     session: Arc<MisterSession>,
     target: CaptureTarget,
     center: POINT,
+    /// Display scaling where the pointer sits (2.0 at 200%). Accelerated
+    /// movement is divided by it, so it's in points like on macOS and the
+    /// guest pointer moves as far as the Windows one would.
+    pixels_per_point: f64,
     /// A Left Ctrl press held back to see if it's AltGr's fake Ctrl
     /// (same timestamp as the Right Alt that follows): (time, scan).
     pending_ctrl: Option<u32>,
@@ -188,6 +194,7 @@ fn run(
                 session: session.clone(),
                 target,
                 center,
+                pixels_per_point: pixels_per_point(center),
                 pending_ctrl: None,
                 last_absolute: None,
             })
@@ -213,7 +220,11 @@ fn run(
         clip(center);
         SetCursor(null_mut());
         SetTimer(hwnd, TIMER_FOCUS, 100, None);
-        crate::log(&format!("capture: start (raw mouse {})", if raw { "on" } else { "off" }));
+        crate::log(&format!(
+            "capture: start (raw mouse {}, display scale {:.2})",
+            if raw { "on" } else { "off" },
+            pixels_per_point(center)
+        ));
         let _ = ready.send(Ok(GetCurrentThreadId()));
 
         let mut msg = MSG::default();
@@ -235,6 +246,18 @@ fn run(
         session.release_all();
         crate::log("capture: end");
         on_end();
+    }
+}
+
+/// Display scaling of the monitor at `at` (1.0 = 100%).
+fn pixels_per_point(at: POINT) -> f64 {
+    let (mut x, mut y) = (96u32, 96u32);
+    // SAFETY: plain queries with out-parameters.
+    let ok = unsafe { GetDpiForMonitor(MonitorFromPoint(at, MONITOR_DEFAULTTONEAREST), MDT_EFFECTIVE_DPI, &mut x, &mut y) };
+    if ok < 0 || x == 0 {
+        1.0
+    } else {
+        x as f64 / 96.0
     }
 }
 
@@ -330,7 +353,8 @@ fn mouse(ctx: &mut Ctx, msg: u32, m: &MSLLHOOKSTRUCT) {
             // would have gone is the accelerated movement.
             let (dx, dy) = (m.pt.x - ctx.center.x, m.pt.y - ctx.center.y);
             if dx != 0 || dy != 0 {
-                ctx.session.mouse_move(dx as f64, dy as f64);
+                let scale = ctx.pixels_per_point;
+                ctx.session.mouse_move(dx as f64 / scale, dy as f64 / scale);
             }
         }
         WM_LBUTTONDOWN => button(MouseButton::Left, true),
@@ -397,12 +421,14 @@ unsafe fn raw_input(handle: HRAWINPUT) {
             let at = (m.lLastX * w / 65535, m.lLastY * h / 65535);
             let delta = ctx.last_absolute.map_or((0, 0), |(x, y)| (at.0 - x, at.1 - y));
             ctx.last_absolute = Some(at);
-            delta
+            // Screen pixels, like the accelerated path.
+            (delta.0 as f64 / ctx.pixels_per_point, delta.1 as f64 / ctx.pixels_per_point)
         } else {
-            (m.lLastX, m.lLastY)
+            // The mouse's own counts, unscaled (as on macOS).
+            (m.lLastX as f64, m.lLastY as f64)
         };
-        if dx != 0 || dy != 0 {
-            ctx.session.mouse_move(dx as f64, dy as f64);
+        if dx != 0.0 || dy != 0.0 {
+            ctx.session.mouse_move(dx, dy);
         }
     });
 }
