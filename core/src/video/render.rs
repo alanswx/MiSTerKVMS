@@ -490,15 +490,28 @@ impl Renderer {
     ) -> Result<(), String> {
         let (frame, target) = match &mut self.target {
             Target::Surface(surface) => {
+                // Every path that doesn't present still submits: frame uploads
+                // (`write_texture`) wait in the queue, each with its own
+                // staging buffer, until the next submit. Skipping it while the
+                // window is hidden (display asleep, minimised, another Space)
+                // piled up ~8 MB per 1080p frame until the system ran out of
+                // memory.
                 let frame = match surface.get_current_texture() {
                     wgpu::CurrentSurfaceTexture::Success(f) | wgpu::CurrentSurfaceTexture::Suboptimal(f) => f,
                     wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Lost => {
                         surface.configure(&self.device, &self.config);
+                        self.queue.submit([]);
                         return Ok(());
                     }
                     // Window hidden or GPU busy: skip this frame.
-                    wgpu::CurrentSurfaceTexture::Timeout | wgpu::CurrentSurfaceTexture::Occluded => return Ok(()),
-                    other => return Err(format!("surface: {other:?}")),
+                    wgpu::CurrentSurfaceTexture::Timeout | wgpu::CurrentSurfaceTexture::Occluded => {
+                        self.queue.submit([]);
+                        return Ok(());
+                    }
+                    other => {
+                        self.queue.submit([]);
+                        return Err(format!("surface: {other:?}"));
+                    }
                 };
                 let view = frame.texture.create_view(&Default::default());
                 (Some(frame), view)
