@@ -53,6 +53,29 @@ struct MiSTerKVMSApp: App {
 }
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
+    func applicationWillFinishLaunching(_ notification: Notification) {
+        Self.redirectLogsToFile()
+    }
+
+    /// When launched from Finder, stderr goes nowhere. Send it (the core's
+    /// warnings and errors) to ~/Library/Logs/MiSTerKVMS.log so problems can
+    /// be diagnosed. Left alone when run from a terminal.
+    static func redirectLogsToFile() {
+        guard isatty(STDERR_FILENO) == 0 else { return }
+        let logs = FileManager.default.urls(for: .libraryDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("Logs", isDirectory: true)
+        try? FileManager.default.createDirectory(at: logs, withIntermediateDirectories: true)
+        let url = logs.appendingPathComponent("MiSTerKVMS.log")
+        // Keep the file from growing forever: start fresh past 5 MB.
+        if let size = try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? Int, size > 5_000_000 {
+            try? FileManager.default.removeItem(at: url)
+        }
+        freopen(url.path, "a", stderr)
+        setvbuf(stderr, nil, _IOLBF, 0)
+        let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "dev"
+        FileHandle.standardError.write("--- MiSTerKVMS \(version) started \(Date())\n".data(using: .utf8)!)
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Built as a plain SwiftPM executable: make sure it behaves like a
         // regular foreground app with a Dock icon and menu bar.

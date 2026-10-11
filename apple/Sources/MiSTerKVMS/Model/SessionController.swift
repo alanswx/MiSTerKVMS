@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import QuartzCore
 import KVMSCore
 
 /// UI-facing state for the one live MiSTer session.
@@ -72,6 +73,7 @@ final class SessionController: ObservableObject {
 
     func open(_ profile: HostProfile) {
         guard profile != self.profile else { return }
+        FileHandle.standardError.write("host: open '\(profile.name)' mister \(profile.misterHost) ndi '\(profile.ndiSource)'\n".data(using: .utf8)!)
         close()
         self.profile = profile
         display = DisplaySettings(
@@ -235,6 +237,16 @@ final class SessionController: ObservableObject {
         video?.stop()
         video = nil
         videoStats = nil
+        removeVideoLayers()
+    }
+
+    /// The renderer adds a Metal sublayer to the view for each session and
+    /// leaves it behind when the session ends. Remove it, or the previous
+    /// MiSTer's last frame stays visible after switching hosts.
+    private func removeVideoLayers() {
+        captureView?.layer?.sublayers?
+            .filter { $0 is CAMetalLayer }
+            .forEach { $0.removeFromSuperlayer() }
     }
 
     /// Remember what the predictive cursor learned for next time.

@@ -287,11 +287,31 @@ impl Receiver {
     /// optional) is asked directly, for networks where discovery can't see it;
     /// we then connect to the address it reports for the source.
     pub fn new(ndi: &'static Ndi, source: &str, obs_host: &str, recv_name: &str) -> Option<Self> {
-        let url = if obs_host.trim().is_empty() {
-            None
-        } else {
-            find(ndi, obs_host, 3000, Some(source)).into_iter().find(|f| f.name == source).and_then(|f| f.url)
-        };
+        Self::with_cancel(ndi, source, obs_host, recv_name, &|| false)
+    }
+
+    /// Like `new`, but gives up looking `source` up on `obs_host` as soon as
+    /// `cancelled()` returns true (so closing a session never waits on it).
+    pub fn with_cancel(
+        ndi: &'static Ndi,
+        source: &str,
+        obs_host: &str,
+        recv_name: &str,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Option<Self> {
+        let mut url = None;
+        if !obs_host.trim().is_empty() {
+            let until = std::time::Instant::now() + std::time::Duration::from_secs(3);
+            while url.is_none() && std::time::Instant::now() < until && !cancelled() {
+                url = find(ndi, obs_host, 250, Some(source))
+                    .into_iter()
+                    .find(|f| f.name == source)
+                    .and_then(|f| f.url);
+            }
+        }
+        if cancelled() {
+            return None;
+        }
         let name = CString::new(source).ok()?;
         let ip = CString::new(url.unwrap_or_default()).ok()?;
         let recv_name = CString::new(recv_name).ok()?;

@@ -225,6 +225,7 @@ impl VideoSession {
         points_scale: f32,
     ) -> Result<Arc<Self>, VideoError> {
         let ndi = ndi::ndi().map_err(|message| VideoError::NdiUnavailable { message })?;
+        log(&format!("video: start '{ndi_source}' (obs host '{extra_ip}', {width_px}x{height_px} px)"));
         // SAFETY: the shell keeps the view alive until stop() returns.
         let (instance, surface) = unsafe { render::create_surface(ns_view) }
             .map_err(|message| VideoError::Graphics { message })?;
@@ -394,6 +395,9 @@ impl VideoSession {
     /// Stop receiving and drawing. Blocks until the render thread has let go
     /// of the view, so the shell can safely release it afterwards.
     pub fn stop(&self) {
+        if !self.shared.stop.load(Ordering::Relaxed) {
+            log("video: stop");
+        }
         if let Some(session) = self.input.lock().unwrap().take() {
             session.set_cursor_sink(None);
         }
@@ -419,6 +423,12 @@ impl Drop for VideoSession {
     }
 }
 
+/// One timestamped line on stderr (the app sends it to its log file).
+fn log(msg: &str) {
+    let t = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0.0, |d| d.as_secs_f64());
+    eprintln!("[{t:.3}] {msg}");
+}
+
 fn panic_message(panic: &Box<dyn std::any::Any + Send>) -> String {
     panic
         .downcast_ref::<String>()
@@ -432,9 +442,19 @@ fn now_100ns() -> i64 {
 }
 
 fn receive_loop(ndi: &'static ndi::Ndi, source: String, extra_ip: String, shared: Arc<Shared>) {
-    let set_state = |s: &str| shared.counters.lock().unwrap().state = s.into();
-    let Some(rx) = ndi::Receiver::new(ndi, &source, &extra_ip, "MiSTerKVMS") else {
-        set_state("could not create NDI receiver");
+    // Record state changes, and log them so a stuck screen can be diagnosed.
+    let set_state = |s: &str| {
+        let mut c = shared.counters.lock().unwrap();
+        if c.state != s {
+            log(&format!("video: '{source}' {} -> {s}", c.state));
+            c.state = s.into();
+        }
+    };
+    let cancelled = || shared.stop.load(Ordering::Relaxed);
+    let Some(rx) = ndi::Receiver::with_cancel(ndi, &source, &extra_ip, "MiSTerKVMS", &cancelled) else {
+        if !cancelled() {
+            set_state("could not create NDI receiver");
+        }
         return;
     };
     let mut stabilizer = Stabilizer::default();
@@ -498,10 +518,12 @@ fn receive_loop(ndi: &'static ndi::Ndi, source: String, extra_ip: String, shared
                 drop(slot);
                 shared.wake.notify_all();
 
+                if shared.counters.lock().unwrap().state != "connected" {
+                    set_state("connected");
+                }
                 let mut c = shared.counters.lock().unwrap();
                 c.received += 1;
                 c.source = (w, h);
-                c.state = "connected".into();
             }
             Captured::Audio(a) => {
                 if a.frame.FourCC == ndi::sys::NDIlib_FourCC_audio_type_FLTP {
@@ -516,11 +538,9 @@ fn receive_loop(ndi: &'static ndi::Ndi, source: String, extra_ip: String, shared
                 }
             }
             Captured::Nothing => {
-                let mut c = shared.counters.lock().unwrap();
-                if c.state == "connected" && rx.connections() == 0 {
-                    c.state = "searching".into();
-                } else if c.state == "connected" {
-                    c.state = "no video".into();
+                let state = shared.counters.lock().unwrap().state.clone();
+                if state == "connected" {
+                    set_state(if rx.connections() == 0 { "searching" } else { "no video" });
                 }
             }
             Captured::Error => set_state("NDI connection lost"),
@@ -625,6 +645,7 @@ fn render_loop(mut renderer: render::Renderer, shared: Arc<Shared>) {
         cursor_shown = pointer.is_some();
         let pointer = pointer.map(|at| render::Pointer { at, size: pointer_size, state });
         if let Err(e) = renderer.draw(crop, &display, points_scale, pointer) {
+            log(&format!("video: draw failed: {e}"));
             shared.counters.lock().unwrap().state = e;
             continue;
         }
