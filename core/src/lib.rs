@@ -2,6 +2,7 @@
 
 uniffi::setup_scaffolding!();
 
+pub mod controller;
 pub mod input;
 pub mod keymap;
 pub mod ndi;
@@ -10,6 +11,7 @@ pub mod session;
 pub mod text;
 pub mod video;
 
+pub use controller::{Controller, ControllerEvent, ControllerObserver, ControllerState};
 pub use input::{InputSettings, KeyResult, MouseButton};
 pub use session::{ConnectionState, InputStats, MisterSession, SessionObserver};
 pub use profiles::{HostProfile, ProfileStore};

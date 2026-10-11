@@ -7,6 +7,8 @@
 pub mod hid {
     pub const ESCAPE: u16 = 0x29;
     pub const F12: u16 = 0x45;
+    pub const DELETE: u16 = 0x4C;
+    pub const LEFT_CTRL: u16 = 0xE0;
     pub const LEFT_ALT: u16 = 0xE2;
     pub const RIGHT_ALT: u16 = 0xE6;
     pub const RIGHT_GUI: u16 = 0xE7;

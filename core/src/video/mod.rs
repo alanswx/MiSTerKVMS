@@ -4,6 +4,7 @@
 mod audio;
 pub mod crop;
 pub mod cursor;
+pub mod ffmpeg;
 mod render;
 
 use std::fmt;
