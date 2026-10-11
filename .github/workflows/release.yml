@@ -21,6 +21,8 @@ concurrency:
 jobs:
   build:
     runs-on: macos-15
+    outputs:
+      version: ${{ steps.version.outputs.version }}
     env:
       HAS_CERT: ${{ secrets.MACOS_CERT_P12 != '' }}
       # Notarizing needs the key, its ID and the issuer ID.
@@ -149,9 +151,11 @@ jobs:
             signing="**Not notarized:** after copying to Applications, right-click the app → Open the first time (or run \`xattr -dr com.apple.quarantine /Applications/MiSTerKVMS.app\`)."
           fi
           cat > "$RUNNER_TEMP/notes.md" <<EOF
-          Universal app (Apple Silicon + Intel), macOS 14 or later. Open the DMG and drag **MiSTerKVMS** to **Applications**.
+          **macOS:** universal app (Apple Silicon + Intel), macOS 14 or later. Open the DMG and drag **MiSTerKVMS** to **Applications**.
 
           $signing
+
+          **Windows:** 64-bit Windows 10 or 11. Unzip \`MiSTerKVMS-$VERSION-win-x64.zip\` anywhere and run **MiSTerKVMS.exe** (it's added to this release a few minutes after the Mac build). Not code-signed yet: SmartScreen may warn the first time (More info → Run anyway). Recording needs [ffmpeg](https://ffmpeg.org) (\`winget install ffmpeg\`).
 
           Requirements: [NDI Tools or the NDI Runtime](https://ndi.video/tools/) on the Mac, [mrext Remote](https://github.com/wizzomafizzo/mrext) on the MiSTer, and OBS with the [DistroAV](https://github.com/DistroAV/DistroAV) NDI plugin. See the [setup guide](https://github.com/${{ github.repository }}/blob/main/docs/SETUP-NDI.md).
 
@@ -164,3 +168,43 @@ jobs:
       - name: Clean up keychain
         if: always() && env.HAS_CERT == 'true'
         run: security delete-keychain "$RUNNER_TEMP/build.keychain-db" || true
+
+  # Runs after the macOS job, which works out the version and creates the
+  # release; the Windows zip is then added to it.
+  build-windows:
+    needs: build
+    runs-on: windows-latest
+    env:
+      VERSION: ${{ needs.build.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Rust toolchain
+        run: |
+          rustup toolchain install stable --profile minimal --target x86_64-pc-windows-msvc
+          rustup default stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: "10.0.x"
+
+      - name: Test core
+        run: cargo test -p kvms-core
+
+      - name: Build and package
+        shell: pwsh
+        run: scripts/build-windows.ps1 -Package -Version $env:VERSION
+
+      - uses: actions/upload-artifact@v7
+        with:
+          path: build/MiSTerKVMS-${{ env.VERSION }}-win-x64.zip
+          archive: false
+
+      - name: Add to release
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "v$VERSION" "build/MiSTerKVMS-$VERSION-win-x64.zip"
