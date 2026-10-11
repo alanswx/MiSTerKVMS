@@ -84,6 +84,13 @@ fn candidates() -> Vec<PathBuf> {
         paths.push("/Library/NDI SDK for Apple/lib/macOS/libndi.dylib".into());
         paths.push("/usr/local/lib/libndi.dylib".into());
     }
+    if cfg!(windows) {
+        // The installer sets NDI_RUNTIME_DIR_V6 machine-wide, but processes
+        // started before the install (or from an old shell) don't see it.
+        let program_files = std::env::var("ProgramFiles").unwrap_or_else(|_| r"C:\Program Files".into());
+        paths.push(PathBuf::from(&program_files).join(r"NDI\NDI 6 Runtime\v6").join(file));
+        paths.push(PathBuf::from(&program_files).join(r"NDI\NDI 6 Tools\Runtime").join(file));
+    }
     paths.push(PathBuf::from(file)); // system search path
     paths
 }
