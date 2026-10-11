@@ -770,6 +770,7 @@ impl Ui {
                 match s.video_stats.as_ref().map(|v| v.state.as_str()) {
                     None | Some("searching") => "Looking for the NDI source…".to_string(),
                     Some("no video") => "Connected, waiting for video".to_string(),
+                    Some("not found") => not_found_text(s.video_stats.as_ref().map_or(&[][..], |v| &v.available_sources)),
                     Some(other) => other.to_string(),
                 },
             ),
@@ -1019,6 +1020,16 @@ fn key(keycode: u32, down: bool) -> glib::Propagation {
         }
     }
     glib::Propagation::Stop
+}
+
+/// The saved NDI source isn't on the network (and no renamed copy of it was
+/// found to switch to).
+fn not_found_text(seen: &[String]) -> String {
+    if seen.is_empty() {
+        "Not found, and no NDI sources are visible. Is OBS running with its NDI output on?".into()
+    } else {
+        format!("Not found on the network. Visible sources: {}. Edit the host to choose one.", seen.join(", "))
+    }
 }
 
 /// NDI frame age needs the OBS PC's and this computer's clocks to agree;

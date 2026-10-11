@@ -372,3 +372,55 @@ impl Drop for Receiver {
         unsafe { (self.ndi.recv_destroy)(self.inst) }
     }
 }
+
+/// "MACHINE (Source)" → ("MACHINE", "Source"). The source part may itself
+/// contain parentheses, e.g. "PC (MiSTer-1 (Video Capture Device 2))".
+fn split_name(full: &str) -> Option<(&str, &str)> {
+    let (machine, rest) = full.split_once(" (")?;
+    Some((machine, rest.strip_suffix(')')?))
+}
+
+/// When `saved` isn't on the network, the source it most likely became:
+/// the only one from the same machine whose name extends or shortens it at a
+/// " (" boundary. OBS can change a source's NDI name between sessions, e.g.
+/// "PC (MiSTer-1 (Video Capture Device 2))" ↔ "PC (MiSTer-1)". None if
+/// there's no single candidate.
+pub fn renamed_source(saved: &str, available: &[String]) -> Option<String> {
+    let (machine, name) = split_name(saved)?;
+    let related = |a: &str, b: &str| a.strip_prefix(b).is_some_and(|rest| rest.starts_with(" ("));
+    let mut candidates = available.iter().filter(|full| {
+        split_name(full).is_some_and(|(m, n)| m == machine && n != name && (related(n, name) || related(name, n)))
+    });
+    let first = candidates.next()?;
+    candidates.next().is_none().then(|| first.clone())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn names(list: &[&str]) -> Vec<String> {
+        list.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn finds_a_renamed_source() {
+        let seen = names(&["DANIHTPC (MiSTer-Pi)", "DANIHTPC (MiSTer-SS1)"]);
+        assert_eq!(
+            renamed_source("DANIHTPC (MiSTer-SS1 (Video Capture Device 2))", &seen).as_deref(),
+            Some("DANIHTPC (MiSTer-SS1)")
+        );
+        // And the other way round.
+        let seen = names(&["DANIHTPC (MiSTer-SS1 (Video Capture Device 2))"]);
+        assert_eq!(renamed_source("DANIHTPC (MiSTer-SS1)", &seen).as_deref(), Some(seen[0].as_str()));
+    }
+
+    #[test]
+    fn leaves_unclear_cases_alone() {
+        // Another machine, a different name, or two candidates.
+        assert_eq!(renamed_source("PC (MiSTer-1 (A))", &names(&["OTHER (MiSTer-1)"])), None);
+        assert_eq!(renamed_source("PC (MiSTer-1)", &names(&["PC (MiSTer-10)", "PC (MiSTer-2)"])), None);
+        assert_eq!(renamed_source("PC (MiSTer-1)", &names(&["PC (MiSTer-1 (A))", "PC (MiSTer-1 (B))"])), None);
+        assert_eq!(renamed_source("not an NDI name", &names(&["PC (x)"])), None);
+    }
+}

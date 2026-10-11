@@ -156,10 +156,17 @@ public sealed partial class MainWindow : Window
             {
                 null or "searching" => "Looking for the NDI source…",
                 "no video" => "Connected, waiting for video",
+                "not found" => NotFoundText(s.VideoStats.AvailableSources),
                 var other => other,
             };
         }
     }
+
+    /// <summary>The saved NDI source isn't on the network (and no renamed
+    /// copy of it was found to switch to).</summary>
+    private static string NotFoundText(List<string> seen) => seen.Count == 0
+        ? "Not found, and no NDI sources are visible. Is OBS running with its NDI output on?"
+        : $"Not found on the network. Visible sources: {string.Join(", ", seen)}. Edit the host to choose one.";
 
     private void RenderStats(ControllerState s)
     {

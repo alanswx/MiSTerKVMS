@@ -805,13 +805,31 @@ impl Inner {
         self.notify(ControllerEvent::Changed);
     }
 
+    /// The open host's NDI source was renamed (and video already moved to
+    /// the new name): remember it.
+    fn source_renamed(&self, renamed: String) {
+        let id = {
+            let mut s = self.state.lock().unwrap();
+            let Some(profile) = s.profile.as_mut() else { return };
+            profile.ndi_source = renamed.clone();
+            profile.id.clone()
+        };
+        log(&format!("host: NDI source is now '{renamed}'"));
+        self.store.update(&id, |p| p.ndi_source = renamed);
+        self.notify(ControllerEvent::ProfilesChanged);
+    }
+
     fn tick(&self) {
         let (session, video) = {
             let s = self.state.lock().unwrap();
             (s.session.clone(), s.video.clone())
         };
         let input_stats = session.map(|s| s.stats());
+        let renamed = video.as_ref().and_then(|v| v.take_renamed_source());
         let video_stats = video.map(|v| v.stats());
+        if let Some(renamed) = renamed {
+            self.source_renamed(renamed);
+        }
         let save_model = {
             let mut s = self.state.lock().unwrap();
             s.input_stats = input_stats;

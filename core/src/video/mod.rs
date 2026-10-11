@@ -181,6 +181,8 @@ pub struct VideoStats {
     pub cursor_detections_per_sec: f64,
     /// Good measurements behind the lag/gain (last minute).
     pub cursor_fit_samples: u32,
+    /// When `state` is "not found": the NDI sources that are visible.
+    pub available_sources: Vec<String>,
 }
 
 /// Receives the raw stream for recording. Implemented by the shell with the
@@ -267,6 +269,7 @@ struct Counters {
     age_sum_ms: f64,
     age_count: u64,
     last_rates: Option<(Instant, u64, u64, f64, f64, f64)>,
+    available: Vec<String>,
 }
 
 struct Shared {
@@ -278,6 +281,9 @@ struct Shared {
     counters: Mutex<Counters>,
     audio: Mutex<Option<AudioOut>>,
     cursor: Mutex<CursorTracker>,
+    /// The source this session switched to because the saved one was
+    /// renamed (see `ndi::renamed_source`), until the controller saves it.
+    renamed: Mutex<Option<String>>,
     /// Recording: where frames go, and the crop fixed when recording started
     /// (so the file doesn't change size when borders are re-detected).
     sink: Mutex<Option<(Arc<dyn MediaSink>, Option<Crop>)>>,
@@ -360,6 +366,7 @@ impl VideoSession {
             audio: Mutex::new(None),
             cursor: Mutex::new(CursorTracker::default()),
             sink: Mutex::new(None),
+            renamed: Mutex::new(None),
         });
 
         match AudioOut::start() {
@@ -513,7 +520,14 @@ impl VideoSession {
             audio_buffer_ms: audio.as_ref().map_or(0.0, |a| a.buffered_ms()),
             audio_underruns: audio.as_ref().map_or(0, |a| a.underruns()),
             audio_rate: audio.as_ref().map_or(0, |a| a.rate),
+            available_sources: c.available.clone(),
         }
+    }
+
+    /// The NDI source this session moved to because the saved name was
+    /// gone and a renamed one was found; returned once, to be saved.
+    pub fn take_renamed_source(&self) -> Option<String> {
+        self.shared.renamed.lock().unwrap().take()
     }
 
     /// Stop receiving and drawing. Blocks until the render thread has let go
@@ -559,9 +573,14 @@ fn now_100ns() -> i64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| (d.as_nanos() / 100) as i64)
 }
 
+/// Without a connection this long, check the source is on the network.
+const SOURCE_CHECK_AFTER: Duration = Duration::from_secs(4);
+const SOURCE_CHECK_EVERY: Duration = Duration::from_secs(10);
+
 fn receive_loop(ndi: &'static ndi::Ndi, source: String, extra_ip: String, shared: Arc<Shared>) {
+    let mut source = source;
     // Record state changes, and log them so a stuck screen can be diagnosed.
-    let set_state = |s: &str| {
+    let set_state = |source: &str, s: &str| {
         let mut c = shared.counters.lock().unwrap();
         if c.state != s {
             log(&format!("video: '{source}' {} -> {s}", c.state));
@@ -569,18 +588,20 @@ fn receive_loop(ndi: &'static ndi::Ndi, source: String, extra_ip: String, shared
         }
     };
     let cancelled = || shared.stop.load(Ordering::Relaxed);
-    let Some(rx) = ndi::Receiver::with_cancel(ndi, &source, &extra_ip, "MiSTerKVMS", &cancelled) else {
+    let Some(mut rx) = ndi::Receiver::with_cancel(ndi, &source, &extra_ip, "MiSTerKVMS", &cancelled) else {
         if !cancelled() {
-            set_state("could not create NDI receiver");
+            set_state(&source, "could not create NDI receiver");
         }
         return;
     };
+    let mut next_source_check = Instant::now() + SOURCE_CHECK_AFTER;
     let mut stabilizer = Stabilizer::default();
     let mut detector = CursorDetector::default();
     let mut frames_since_crop = u32::MAX;
     let mut last_perf = Instant::now();
 
     while !shared.stop.load(Ordering::Relaxed) {
+        let mut check_source = false;
         match rx.capture(100) {
             Captured::Video(v) => {
                 let (w, h, stride) = (v.frame.xres as u32, v.frame.yres as u32, v.stride() as u32);
@@ -637,7 +658,7 @@ fn receive_loop(ndi: &'static ndi::Ndi, source: String, extra_ip: String, shared
                 shared.wake.notify_all();
 
                 if shared.counters.lock().unwrap().state != "connected" {
-                    set_state("connected");
+                    set_state(&source, "connected");
                 }
                 let mut c = shared.counters.lock().unwrap();
                 c.received += 1;
@@ -658,11 +679,39 @@ fn receive_loop(ndi: &'static ndi::Ndi, source: String, extra_ip: String, shared
             Captured::Nothing => {
                 let state = shared.counters.lock().unwrap().state.clone();
                 if state == "connected" {
-                    set_state(if rx.connections() == 0 { "searching" } else { "no video" });
+                    set_state(&source, if rx.connections() == 0 { "searching" } else { "no video" });
+                }
+                check_source = rx.connections() == 0 && Instant::now() >= next_source_check;
+            }
+            Captured::Error => set_state(&source, "NDI connection lost"),
+            Captured::Other => {}
+        }
+        // Not connecting: is the source there at all? OBS can rename a
+        // source between sessions.
+        if check_source && !cancelled() {
+            next_source_check = Instant::now() + SOURCE_CHECK_EVERY;
+            let seen = ndi::find_sources(ndi, &extra_ip, 1000);
+            match ndi::renamed_source(&source, &seen) {
+                // It's there (just slow to connect), or we're closing.
+                _ if seen.contains(&source) || cancelled() => {}
+                Some(renamed) => {
+                    log(&format!("video: '{source}' not on the network; switching to '{renamed}'"));
+                    match ndi::Receiver::with_cancel(ndi, &renamed, &extra_ip, "MiSTerKVMS", &cancelled) {
+                        Some(new_rx) => {
+                            rx = new_rx;
+                            source = renamed.clone();
+                            *shared.renamed.lock().unwrap() = Some(renamed);
+                            next_source_check = Instant::now() + SOURCE_CHECK_AFTER;
+                            set_state(&source, "searching");
+                        }
+                        None => set_state(&source, "could not create NDI receiver"),
+                    }
+                }
+                None => {
+                    shared.counters.lock().unwrap().available = seen;
+                    set_state(&source, "not found");
                 }
             }
-            Captured::Error => set_state("NDI connection lost"),
-            Captured::Other => {}
         }
         if last_perf.elapsed() > Duration::from_secs(1) {
             last_perf = Instant::now();

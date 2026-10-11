@@ -164,6 +164,12 @@ private struct VideoPlaceholder: View {
         switch controller.videoStats?.state {
         case nil, "searching": "Looking for the NDI source…"
         case "no video": "Connected, waiting for video"
+        case "not found":
+            if let seen = controller.videoStats?.availableSources, !seen.isEmpty {
+                "Not found on the network. Visible sources: \(seen.joined(separator: ", ")). Edit the host to choose one."
+            } else {
+                "Not found, and no NDI sources are visible. Is OBS running with its NDI output on?"
+            }
         case let other?: other
         }
     }

@@ -165,6 +165,8 @@ public sealed class VideoStats
     public double CursorErrorPx { get; set; }
     public double CursorDetectionsPerSec { get; set; }
     public uint CursorFitSamples { get; set; }
+    /// <summary>When State is "not found": the sources that are visible.</summary>
+    public List<string> AvailableSources { get; set; } = [];
 }
 
 public sealed class ControllerState
