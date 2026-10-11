@@ -4,7 +4,6 @@ import SwiftUI
 
 struct SessionView: View {
     @EnvironmentObject private var controller: SessionController
-    @EnvironmentObject private var profiles: ProfileStore
     let profile: HostProfile
     let onEdit: () -> Void
     @State private var showCaptureHint = false
@@ -127,15 +126,10 @@ struct SessionView: View {
 }
 
 extension SessionView {
-    /// Apply a display change and remember scale/smooth/crop for this host.
+    /// Apply a display change (the core remembers scale, smoothing,
+    /// auto-crop and the predictive cursor for this host).
     private func setDisplay(_ change: (inout DisplaySettings) -> Void) {
         controller.updateDisplay(change)
-        guard var saved = profiles.profiles.first(where: { $0.id == profile.id }) else { return }
-        saved.scaleMode = controller.display.scaleMode.name
-        saved.smoothScaling = controller.display.smooth
-        saved.autoCrop = controller.display.autoCrop
-        saved.predictiveCursor = controller.display.predictiveCursor
-        profiles.upsert(saved)
     }
 }
 
@@ -338,7 +332,13 @@ struct CaptureSurface: NSViewRepresentable {
 
         override func viewDidMoveToWindow() {
             super.viewDidMoveToWindow()
-            if window != nil { controller?.attach(view: self) }
+            if window != nil {
+                controller?.attach(view: self)
+            } else {
+                // Leaving the window (no host selected): stop drawing into it
+                // before it can go away.
+                controller?.detach(view: self)
+            }
         }
 
         override func layout() {

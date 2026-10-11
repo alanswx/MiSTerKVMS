@@ -4,8 +4,16 @@ import SwiftUI
 @main
 struct MiSTerKVMSApp: App {
     @NSApplicationDelegateAdaptor private var appDelegate: AppDelegate
-    @StateObject private var profiles = ProfileStore()
-    @StateObject private var controller = SessionController()
+    @StateObject private var controller: SessionController
+    @StateObject private var profiles: ProfileStore
+
+    init() {
+        let controller = SessionController()
+        let profiles = ProfileStore(core: controller.core)
+        controller.profiles = profiles
+        _controller = StateObject(wrappedValue: controller)
+        _profiles = StateObject(wrappedValue: profiles)
+    }
 
     var body: some Scene {
         WindowGroup("MiSTerKVMS") {
