@@ -4,6 +4,18 @@ Prerequisite: the shared groundwork in [PORTING.md](PORTING.md) §2 (profiles an
 
 Target: Windows 10 22H2 and Windows 11, x64 first, ARM64 second.
 
+## Status (October 2026)
+
+W0–W5 and W7 (unsigned) are done; the app is in `windows/`, built by `scripts/build-windows.ps1` and CI. Where it differs from the plan below:
+
+- **Bindings:** a small hand-written C interface (`core/src/capi.rs`: create/free the controller, one JSON request/reply call, and an event callback) instead of uniffi-bindgen-cs, which lags our UniFFI version. Almost everything goes through the core `Controller`, so the surface stays tiny.
+- **Video surface:** neither a child HWND nor a SwapChainPanel. The core creates a DirectComposition surface handle; wgpu builds its swap chain on it (`NativeSurface::CompositionHandle`), and the shell wraps the handle with `ICompositorSwapChainInterop::CreateCompositionSurfaceForHandle` in a brush on a XAML visual. No airspace problem, so the stats overlay, capture hint and dialogs stay in XAML; no UI-thread swap-chain calls, and DPI is handled by sizing the swap chain in pixels.
+- **Input capture lives in the core** (`core/src/win/capture.rs`), on its own thread: low-level keyboard + mouse hooks (both swallowed), Raw Input for raw mode, the pointer parked and hidden under a 1-pixel window of ours, AltGr's fake Left Ctrl dropped (scan code 0x21D or same timestamp), and it ends on the chord, focus loss or disconnect. Accelerated movement is divided by the display scale, so it's in points like on macOS.
+- **Recording (W6):** the core's ffmpeg recorder (`core/src/video/ffmpeg.rs`) rather than Media Foundation; needs ffmpeg on the PATH or next to the app.
+- **Packaging:** a self-contained zip (WinUI component packages only, ~70 MB). MSIX, signing and winget are still to do; so is ARM64 (check NDI's ARM64 runtime first).
+
+Still to verify by hand: an AltGr layout, Raw Input on a high-DPI mouse, mixed-DPI monitors, an 8-hour soak (§8).
+
 ## 1. Architecture
 
 ```

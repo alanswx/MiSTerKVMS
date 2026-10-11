@@ -2,6 +2,8 @@
 
 The Windows and Linux plans ([PORT-WINDOWS.md](PORT-WINDOWS.md), [PORT-LINUX.md](PORT-LINUX.md)) build on this document. It covers what is already portable, what's tied to macOS, and the groundwork both ports need first.
 
+> **Update (October 2026):** §2 items 1–4 and 7 are done: profiles and the `Controller` live in core and both shells use them, the renderer takes a `NativeSurface`, the ffmpeg recorder is the fallback `MediaSink`, and CI builds macOS and Windows. Paste-as-keystrokes in the GUI (item 5) is still to do. The table below is the v0.9 starting point.
+
 ## 1. Where things stand (v0.9)
 
 About 4,000 lines of Rust are shared. About 1,100 lines of Swift are the macOS shell.

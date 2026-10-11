@@ -6,20 +6,24 @@ Status: 0.9 (early). Keyboard/mouse via mrext, NDI video and audio, scaling/zoom
 
 ## Install
 
-Download the latest DMG from [Releases](https://github.com/danifunker/MiSTerKVMS/releases), open it and drag **MiSTerKVMS** to **Applications**. Universal app (Apple Silicon + Intel), macOS 14 or later.
+From [Releases](https://github.com/danifunker/MiSTerKVMS/releases):
+
+- **macOS:** open the DMG and drag **MiSTerKVMS** to **Applications**. Universal app (Apple Silicon + Intel), macOS 14 or later.
+- **Windows:** unzip `MiSTerKVMS-<version>-win-x64.zip` anywhere and run **MiSTerKVMS.exe**. 64-bit Windows 10 or 11; nothing else to install for the app itself. It isn't code-signed yet, so SmartScreen may warn the first time (More info → Run anyway). The first time video starts, allow MiSTerKVMS through Windows Firewall on private networks.
 
 You also need:
 
-- [NDI Tools](https://ndi.video/tools/) (or the NDI Runtime) on the Mac.
+- [NDI Tools](https://ndi.video/tools/) (or the NDI Runtime) on this computer.
 - [mrext Remote](https://github.com/wizzomafizzo/mrext) running on each MiSTer.
 - OBS Studio with the [DistroAV](https://github.com/DistroAV/DistroAV) NDI plugin on the PC with the capture card(s): see [docs/SETUP-NDI.md](docs/SETUP-NDI.md).
 
-On first use macOS asks for **Accessibility** (to send ⌘Tab and other system shortcuts to MiSTer) and, if you enable raw mouse input, **Input Monitoring**.
+On first use macOS asks for **Accessibility** (to send ⌘Tab and other system shortcuts to MiSTer) and, if you enable raw mouse input, **Input Monitoring**. Windows needs no permissions. Recording on Windows needs [ffmpeg](https://ffmpeg.org) on the PATH (`winget install ffmpeg`).
 
 ## Layout
 
-- `core/`: Rust core (sessions, mrext WebSocket client, keymaps). Shared by every platform.
+- `core/`: Rust core, shared by every platform: the `Controller` (hosts, the live session, stats, recording), mrext WebSocket client, keymaps, NDI, the wgpu renderer, audio, and Windows input capture. Hosts are saved in `profiles.json` in `~/Library/Application Support/MiSTerKVMS` or `%APPDATA%\MiSTerKVMS`.
 - `apple/`: macOS shell (SwiftUI + AppKit), using the core through UniFFI bindings.
+- `windows/`: Windows shell (WinUI 3, C#/.NET 10), using the core through its small C interface (`core/src/capi.rs`).
 - `uniffi-bindgen/`: generates the Swift bindings.
 
 ## Build (macOS)
@@ -34,6 +38,16 @@ The app is written to `build/MiSTerKVMS.app`. It's signed with your "Apple Devel
 
 For a universal build (needs rustup with `aarch64-apple-darwin` and `x86_64-apple-darwin`): `UNIVERSAL=1 scripts/build-mac.sh`. Package a drag-to-install DMG with `scripts/package-dmg.sh build/MiSTerKVMS.dmg`.
 
+## Build (Windows)
+
+Requires Rust (MSVC toolchain), the .NET 10 SDK and the NDI Runtime.
+
+```powershell
+scriptsuild-windows.ps1 -Run
+```
+
+`-Package` publishes a self-contained build and zips it to `build\MiSTerKVMS-<version>-win-x64.zip`. The app logs to `%LOCALAPPDATA%\MiSTerKVMS\MiSTerKVMS.log`.
+
 Core tests: `cargo test -p kvms-core`.
 
 The tools in `core/examples` (connection probe, NDI probe, latency and predictive-cursor checks) read your MiSTer address and NDI source from `local.settings.json` in the repo root. Copy `local.settings.example.json` to start; the real file is git-ignored so your network details stay out of the repo. Arguments on the command line override it. For example, `cargo run -p kvms-core --example probe` connects and prints status without sending any input.
@@ -41,13 +55,14 @@ The tools in `core/examples` (connection probe, NDI probe, latency and predictiv
 ## Using it
 
 - **Capture** starts when a host connects and whenever you click the screen.
-- **Release**: **Right ⌘ + Right ⌥ + Esc**.
+- **Release**: **Right ⌘ + Right ⌥ + Esc** (Windows: **Right Win + Right Alt + Esc**). Switching to another window also releases.
 - **F12** opens the MiSTer menu.
-- **⌥-click** sends a middle click (configurable per host).
+- **⌥-click** (Windows: **Alt-click**) sends a middle click (configurable per host).
+- Windows never lets an app capture **Ctrl+Alt+Del** or **Win+L**: use **Send Ctrl+Alt+Del** in the toolbar's **…** menu.
 
 ## Command-line tool (`kvms`)
 
-`kvms` drives a MiSTer from scripts, for testing and debugging cores: screenshots, recordings, typing, key combos, mouse, and loading a freshly built core. It ships inside the app; to put it on your PATH:
+`kvms` drives a MiSTer from scripts, for testing and debugging cores: screenshots, recordings, typing, key combos, mouse, and loading a freshly built core. It ships inside the app (on Windows, `kvms.exe` next to `MiSTerKVMS.exe`); on macOS, to put it on your PATH:
 
 ```bash
 sudo ln -sf /Applications/MiSTerKVMS.app/Contents/MacOS/kvms /usr/local/bin/kvms
@@ -88,7 +103,7 @@ Several MiSTers can be named under `machines` and picked with `--host` (or `-H`)
 
 ## Releases
 
-Every push to `main` builds a universal DMG and publishes a GitHub release (`.github/workflows/release.yml`). The version is MAJOR.MINOR from `Cargo.toml` plus an auto-incremented patch (0.9.0, 0.9.1, …); bump `Cargo.toml` to start a new series. Signing and notarization use these repository secrets when present:
+Every push to `main` builds a universal DMG and a Windows zip and publishes a GitHub release (`.github/workflows/release.yml`). The version is MAJOR.MINOR from `Cargo.toml` plus an auto-incremented patch (0.9.0, 0.9.1, …); bump `Cargo.toml` to start a new series. Signing and notarization use these repository secrets when present:
 
 | Secret | What |
 |---|---|
