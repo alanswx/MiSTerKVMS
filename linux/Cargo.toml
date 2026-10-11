@@ -1,0 +1,23 @@
+[package]
+name = "kvms-linux"
+description = "MiSTerKVMS for Linux: GTK 4 + libadwaita shell on the shared core."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "misterkvms"
+path = "src/main.rs"
+
+# Only Linux has a shell here; elsewhere this builds a stub, so workspace
+# builds keep working on macOS and Windows.
+[target.'cfg(target_os = "linux")'.dependencies]
+kvms-core = { path = "../core" }
+gtk = { package = "gtk4", version = "0.11", features = ["v4_14"] }
+adw = { package = "libadwaita", version = "0.9", features = ["v1_5"] }
+gdk-wayland = { package = "gdk4-wayland", version = "0.11", features = ["wayland_crate"] }
+gdk-x11 = { package = "gdk4-x11", version = "0.11", features = ["xlib"] }
+wayland-client = "0.31"
+wayland-backend = { version = "0.3", features = ["client_system"] }
+wayland-protocols = { version = "0.32", features = ["client", "unstable"] }
+x11rb = "0.14"

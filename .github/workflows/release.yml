@@ -157,6 +157,8 @@ jobs:
 
           **Windows:** 64-bit Windows 10 or 11. Unzip \`MiSTerKVMS-$VERSION-win-x64.zip\` anywhere and run **MiSTerKVMS.exe** (it's added to this release a few minutes after the Mac build). Not code-signed yet: SmartScreen may warn the first time (More info → Run anyway). Recording needs [ffmpeg](https://ffmpeg.org) (\`winget install ffmpeg\`).
 
+          **Linux:** x86_64, GNOME/KDE on Wayland (X11 works too); needs GTK 4.14+ and libadwaita 1.5+ (Ubuntu 24.04, Fedora 40 or newer). Unpack \`MiSTerKVMS-$VERSION-linux-x86_64.tar.gz\` and run \`./install.sh\` (or \`./misterkvms\` in place). Needs the [NDI runtime for Linux](https://ndi.video/tools/) (\`libndi.so.6\`) and avahi-daemon for discovery; recording needs ffmpeg.
+
           Requirements: [NDI Tools or the NDI Runtime](https://ndi.video/tools/) on the Mac, [mrext Remote](https://github.com/wizzomafizzo/mrext) on the MiSTer, and OBS with the [DistroAV](https://github.com/DistroAV/DistroAV) NDI plugin. See the [setup guide](https://github.com/${{ github.repository }}/blob/main/docs/SETUP-NDI.md).
 
           NDI® is a registered trademark of Vizrt NDI AB.
@@ -208,3 +210,40 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh release upload "v$VERSION" "build/MiSTerKVMS-$VERSION-win-x64.zip"
+
+  build-linux:
+    needs: build
+    runs-on: ubuntu-24.04
+    env:
+      VERSION: ${{ needs.build.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-4-dev libadwaita-1-dev libasound2-dev
+
+      - name: Rust toolchain
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Test core
+        run: cargo test -p kvms-core
+
+      - name: Build and package
+        run: scripts/build-linux.sh
+
+      - uses: actions/upload-artifact@v7
+        with:
+          path: build/MiSTerKVMS-${{ env.VERSION }}-linux-x86_64.tar.gz
+          archive: false
+
+      - name: Add to release
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "v$VERSION" "build/MiSTerKVMS-$VERSION-linux-x86_64.tar.gz"
