@@ -9,6 +9,7 @@ Status: 0.9 (early). Keyboard/mouse via mrext, NDI video and audio, scaling/zoom
 From [Releases](https://github.com/danifunker/MiSTerKVMS/releases):
 
 - **macOS:** open the DMG and drag **MiSTerKVMS** to **Applications**. Universal app (Apple Silicon + Intel), macOS 14 or later.
+- **Linux:** unpack `MiSTerKVMS-<version>-linux-x86_64.tar.gz` and run `./install.sh` (adds it to the app menu) or `./misterkvms` in place. Needs GTK 4.14+ and libadwaita 1.5+ (Ubuntu 24.04, Fedora 40 or newer). NDI discovery needs `avahi-daemon`.
 - **Windows:** unzip `MiSTerKVMS-<version>-win-x64.zip` anywhere and run **MiSTerKVMS.exe**. 64-bit Windows 10 or 11; nothing else to install for the app itself. It isn't code-signed yet, so SmartScreen may warn the first time (More info → Run anyway). The first time video starts, allow MiSTerKVMS through Windows Firewall on private networks.
 
 You also need:
@@ -24,6 +25,7 @@ On first use macOS asks for **Accessibility** (to send ⌘Tab and other system s
 - `core/`: Rust core, shared by every platform: the `Controller` (hosts, the live session, stats, recording), mrext WebSocket client, keymaps, NDI, the wgpu renderer, audio, and Windows input capture. Hosts are saved in `profiles.json` in `~/Library/Application Support/MiSTerKVMS` or `%APPDATA%\MiSTerKVMS`.
 - `apple/`: macOS shell (SwiftUI + AppKit), using the core through UniFFI bindings.
 - `windows/`: Windows shell (WinUI 3, C#/.NET 10), using the core through its small C interface (`core/src/capi.rs`).
+- `linux/`: Linux shell (GTK 4 + libadwaita, Rust), calling the core directly. Settings in `~/.config/misterkvms`.
 - `uniffi-bindgen/`: generates the Swift bindings.
 
 ## Build (macOS)
@@ -37,6 +39,16 @@ scripts/build-mac.sh --run
 The app is written to `build/MiSTerKVMS.app`. It's signed with your "Apple Development" certificate so macOS remembers the Accessibility permission between builds. Set `SIGN_IDENTITY=-` for ad-hoc signing.
 
 For a universal build (needs rustup with `aarch64-apple-darwin` and `x86_64-apple-darwin`): `UNIVERSAL=1 scripts/build-mac.sh`. Package a drag-to-install DMG with `scripts/package-dmg.sh build/MiSTerKVMS.dmg`.
+
+## Build (Linux)
+
+Requires Rust and, on Ubuntu/Debian, `sudo apt install build-essential pkg-config libgtk-4-dev libadwaita-1-dev libasound2-dev`.
+
+```bash
+scripts/build-linux.sh --run
+```
+
+It also writes `build/MiSTerKVMS-<version>-linux-<arch>.tar.gz`. For video, install the NDI SDK/runtime for Linux (`libndi.so.6`).
 
 ## Build (Windows)
 
@@ -55,7 +67,7 @@ The tools in `core/examples` (connection probe, NDI probe, latency and predictiv
 ## Using it
 
 - **Capture** starts when a host connects and whenever you click the screen.
-- **Release**: **Right ⌘ + Right ⌥ + Esc** (Windows: **Right Win + Right Alt + Esc**). Switching to another window also releases.
+- **Release**: **Right ⌘ + Right ⌥ + Esc** (Windows: **Right Win + Right Alt + Esc**; Linux: **Right Super + Right Alt + Esc**). Switching to another window also releases.
 - **F12** opens the MiSTer menu.
 - **⌥-click** (Windows: **Alt-click**) sends a middle click (configurable per host).
 - Windows never lets an app capture **Ctrl+Alt+Del** or **Win+L**: use **Send Ctrl+Alt+Del** in the toolbar's **…** menu.
@@ -103,7 +115,7 @@ Several MiSTers can be named under `machines` and picked with `--host` (or `-H`)
 
 ## Releases
 
-Every push to `main` builds a universal DMG and a Windows zip and publishes a GitHub release (`.github/workflows/release.yml`). The version is MAJOR.MINOR from `Cargo.toml` plus an auto-incremented patch (0.9.0, 0.9.1, …); bump `Cargo.toml` to start a new series. Signing and notarization use these repository secrets when present:
+Every push to `main` builds a universal DMG, a Windows zip and a Linux tarball and publishes a GitHub release (`.github/workflows/release.yml`). The version is MAJOR.MINOR from `Cargo.toml` plus an auto-incremented patch (0.9.0, 0.9.1, …); bump `Cargo.toml` to start a new series. Signing and notarization use these repository secrets when present:
 
 | Secret | What |
 |---|---|

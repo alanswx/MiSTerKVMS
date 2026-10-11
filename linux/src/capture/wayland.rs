@@ -6,6 +6,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use gdk_wayland::prelude::*;
 use gtk::glib;
 use gtk::prelude::*;
 use kvms_core::MisterSession;

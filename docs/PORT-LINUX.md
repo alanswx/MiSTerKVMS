@@ -4,6 +4,10 @@ Prerequisite: the shared groundwork in [PORTING.md](PORTING.md) §2.
 
 Targets: current GNOME and KDE on **Wayland** (primary), X11 sessions (secondary), x86_64 and aarch64 (e.g. Raspberry Pi 5). Distribution through **Flatpak** first.
 
+## Status (October 2026)
+
+The shell is in `linux/` (GTK 4.14 + libadwaita 1.5, so Ubuntu 24.04 and newer), built by `scripts/build-linux.sh` and CI into a tarball with an install script. Done as planned: L1 (CLI), L2 option 1 (`NativeSurface::Offscreen`: the core renders at the widget's pixel size and reads back; the widget draws it 1:1), L3 (shortcut inhibition + pointer-constraints + relative-pointer on GDK's Wayland connection), L4 in a simpler form (X11: warp-to-centre, desktop acceleration; no XI2 raw motion yet), L5, L6 via the core's ffmpeg recorder instead of GStreamer. Still to do: Flatpak/AppImage and aarch64 builds, XI2 raw motion, the dmabuf path (L8) if the readback shows up in measurements.
+
 ## 1. Architecture
 
 ```
