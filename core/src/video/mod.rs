@@ -573,6 +573,9 @@ fn now_100ns() -> i64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| (d.as_nanos() / 100) as i64)
 }
 
+/// Only report video as gone after this long without a frame: NDI often
+/// has short gaps, and every state change flashes the UI.
+const VIDEO_GONE_AFTER: Duration = Duration::from_secs(1);
 /// Without a connection this long, check the source is on the network.
 const SOURCE_CHECK_AFTER: Duration = Duration::from_secs(4);
 const SOURCE_CHECK_EVERY: Duration = Duration::from_secs(10);
@@ -595,6 +598,7 @@ fn receive_loop(ndi: &'static ndi::Ndi, source: String, extra_ip: String, shared
         return;
     };
     let mut next_source_check = Instant::now() + SOURCE_CHECK_AFTER;
+    let mut last_video = Instant::now();
     let mut stabilizer = Stabilizer::default();
     let mut detector = CursorDetector::default();
     let mut frames_since_crop = u32::MAX;
@@ -604,6 +608,7 @@ fn receive_loop(ndi: &'static ndi::Ndi, source: String, extra_ip: String, shared
         let mut check_source = false;
         match rx.capture(100) {
             Captured::Video(v) => {
+                last_video = Instant::now();
                 let (w, h, stride) = (v.frame.xres as u32, v.frame.yres as u32, v.stride() as u32);
                 let data = v.data();
 
@@ -678,7 +683,7 @@ fn receive_loop(ndi: &'static ndi::Ndi, source: String, extra_ip: String, shared
             }
             Captured::Nothing => {
                 let state = shared.counters.lock().unwrap().state.clone();
-                if state == "connected" {
+                if state == "connected" && last_video.elapsed() >= VIDEO_GONE_AFTER {
                     set_state(&source, if rx.connections() == 0 { "searching" } else { "no video" });
                 }
                 check_source = rx.connections() == 0 && Instant::now() >= next_source_check;
