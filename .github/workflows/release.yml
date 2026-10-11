@@ -26,7 +26,7 @@ jobs:
       # Notarizing needs the key, its ID and the issuer ID.
       HAS_NOTARY: ${{ secrets.APPLE_API_KEY_P8 != '' && secrets.APPLE_API_KEY_ID != '' && secrets.APPLE_API_ISSUER_ID != '' }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
@@ -129,10 +129,11 @@ jobs:
           scripts/package-dmg.sh "build/MiSTerKVMS-${{ steps.version.outputs.version }}.dmg"
           rm -f "$RUNNER_TEMP/notary.p8"
 
-      - uses: actions/upload-artifact@v4
+      # The DMG itself (not zipped); the artifact takes the file's name.
+      - uses: actions/upload-artifact@v7
         with:
-          name: MiSTerKVMS-${{ steps.version.outputs.version }}
-          path: build/MiSTerKVMS-*.dmg
+          path: build/MiSTerKVMS-${{ steps.version.outputs.version }}.dmg
+          archive: false
 
       - name: Publish release
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
