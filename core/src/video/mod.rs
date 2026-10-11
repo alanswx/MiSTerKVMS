@@ -17,9 +17,13 @@ use audio::AudioOut;
 use crop::{Crop, Stabilizer};
 use cursor::{CursorDetector, CursorTracker};
 
+use serde::{Deserialize, Serialize};
+
+use crate::log;
 use crate::session::{CursorSink, MisterSession};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, uniffi::Enum)]
+#[serde(rename_all = "camelCase")]
 pub enum ScaleMode {
     /// Largest size that fits the view, keeping aspect ratio.
     Fit,
@@ -29,7 +33,43 @@ pub enum ScaleMode {
     Native,
 }
 
-#[derive(Debug, Clone, uniffi::Record)]
+impl ScaleMode {
+    /// The name saved in profiles.
+    pub fn name(self) -> &'static str {
+        match self {
+            ScaleMode::Fit => "fit",
+            ScaleMode::Integer => "integer",
+            ScaleMode::Native => "native",
+        }
+    }
+
+    pub fn from_name(name: &str) -> Self {
+        match name {
+            "integer" => ScaleMode::Integer,
+            "native" => ScaleMode::Native,
+            _ => ScaleMode::Fit,
+        }
+    }
+}
+
+/// The native view the video is drawn into. Handles are pointers or ids
+/// passed as integers; they must stay valid until the session is stopped.
+#[derive(Debug, Clone, PartialEq, uniffi::Enum)]
+pub enum NativeSurface {
+    /// An NSView (macOS). Create the session on the main thread.
+    AppKit { ns_view: u64 },
+    /// A window (Windows). `hinstance` may be 0.
+    Win32 { hwnd: u64, hinstance: u64 },
+    /// A DirectComposition surface handle (Windows,
+    /// `DCompositionCreateSurfaceHandle`). The shell shows it through a
+    /// composition brush, so UI can draw on top of the video.
+    CompositionHandle { handle: u64 },
+    Wayland { display: u64, surface: u64 },
+    Xlib { display: u64, window: u64 },
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, uniffi::Record)]
+#[serde(rename_all = "camelCase", default)]
 pub struct DisplaySettings {
     pub scale_mode: ScaleMode,
     /// Linear filtering instead of nearest-neighbour.
@@ -59,7 +99,8 @@ impl Default for DisplaySettings {
     }
 }
 
-#[derive(Debug, Clone, uniffi::Record)]
+#[derive(Debug, Clone, Default, Serialize, uniffi::Record)]
+#[serde(rename_all = "camelCase")]
 pub struct VideoStats {
     /// "searching", "connected", "no video", or an error.
     pub state: String,
@@ -224,10 +265,24 @@ impl VideoSession {
         height_px: u32,
         points_scale: f32,
     ) -> Result<Arc<Self>, VideoError> {
+        Self::with_surface(ndi_source, extra_ip, NativeSurface::AppKit { ns_view }, width_px, height_px, points_scale)
+    }
+
+    /// Like `new`, for any kind of native view. `points_scale` is the
+    /// display's pixels per point (Windows: DPI / 96).
+    #[uniffi::constructor]
+    pub fn with_surface(
+        ndi_source: String,
+        extra_ip: String,
+        surface: NativeSurface,
+        width_px: u32,
+        height_px: u32,
+        points_scale: f32,
+    ) -> Result<Arc<Self>, VideoError> {
         let ndi = ndi::ndi().map_err(|message| VideoError::NdiUnavailable { message })?;
         log(&format!("video: start '{ndi_source}' (obs host '{extra_ip}', {width_px}x{height_px} px)"));
         // SAFETY: the shell keeps the view alive until stop() returns.
-        let (instance, surface) = unsafe { render::create_surface(ns_view) }
+        let (instance, surface) = unsafe { render::create_surface(&surface) }
             .map_err(|message| VideoError::Graphics { message })?;
 
         let shared = Arc::new(Shared {
@@ -423,12 +478,6 @@ impl Drop for VideoSession {
     }
 }
 
-/// One timestamped line on stderr (the app sends it to its log file).
-fn log(msg: &str) {
-    let t = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0.0, |d| d.as_secs_f64());
-    eprintln!("[{t:.3}] {msg}");
-}
-
 fn panic_message(panic: &Box<dyn std::any::Any + Send>) -> String {
     panic
         .downcast_ref::<String>()
@@ -611,6 +660,8 @@ fn render_loop(mut renderer: render::Renderer, shared: Arc<Shared>) {
                 }
             }
             if shared.stop.load(Ordering::Relaxed) {
+                drop(slot);
+                renderer.clear();
                 return;
             }
             slot.redraw = false;

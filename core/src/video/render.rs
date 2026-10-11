@@ -2,15 +2,18 @@
 //! D3D12/Vulkan elsewhere): crop, fit/integer/native scale, zoom/pan,
 //! nearest or smooth filtering.
 
+use std::ffi::c_void;
+use std::num::NonZeroIsize;
 use std::ptr::NonNull;
 
 use raw_window_handle::{
-    AppKitDisplayHandle, AppKitWindowHandle, RawDisplayHandle, RawWindowHandle,
+    AppKitDisplayHandle, AppKitWindowHandle, RawDisplayHandle, RawWindowHandle, WaylandDisplayHandle,
+    WaylandWindowHandle, Win32WindowHandle, WindowsDisplayHandle, XlibDisplayHandle, XlibWindowHandle,
 };
 
 use super::crop::Crop;
 use super::cursor::PointerState;
-use super::{DisplaySettings, ScaleMode};
+use super::{DisplaySettings, NativeSurface, ScaleMode};
 
 const SHADER: &str = r#"
 struct U { rect: vec4<f32>, uv: vec4<f32>, tint: vec4<f32> };
@@ -126,15 +129,40 @@ pub struct Renderer {
 /// AppKit); everything else can then move to the render thread.
 ///
 /// # Safety
-/// `ns_view` must be a valid NSView that outlives the returned surface.
+/// The handles in `target` must be valid and outlive the returned surface.
 pub unsafe fn create_surface(
-    ns_view: u64,
+    target: &NativeSurface,
 ) -> Result<(wgpu::Instance, wgpu::Surface<'static>), String> {
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
-    let view = NonNull::new(ns_view as *mut std::ffi::c_void).ok_or("null view")?;
-    let target = wgpu::SurfaceTargetUnsafe::RawHandle {
-        raw_display_handle: Some(RawDisplayHandle::AppKit(AppKitDisplayHandle::new())),
-        raw_window_handle: RawWindowHandle::AppKit(AppKitWindowHandle::new(view)),
+    let ptr = |v: u64, what: &str| NonNull::new(v as usize as *mut c_void).ok_or(format!("null {what}"));
+    let raw = |display, window| wgpu::SurfaceTargetUnsafe::RawHandle {
+        raw_display_handle: Some(display),
+        raw_window_handle: window,
+    };
+    let target = match *target {
+        NativeSurface::AppKit { ns_view } => raw(
+            RawDisplayHandle::AppKit(AppKitDisplayHandle::new()),
+            RawWindowHandle::AppKit(AppKitWindowHandle::new(ptr(ns_view, "view")?)),
+        ),
+        NativeSurface::Win32 { hwnd, hinstance } => {
+            let mut handle = Win32WindowHandle::new(NonZeroIsize::new(hwnd as isize).ok_or("null hwnd")?);
+            handle.hinstance = NonZeroIsize::new(hinstance as isize);
+            raw(RawDisplayHandle::Windows(WindowsDisplayHandle::new()), RawWindowHandle::Win32(handle))
+        }
+        #[cfg(windows)]
+        NativeSurface::CompositionHandle { handle } => {
+            wgpu::SurfaceTargetUnsafe::SurfaceHandle(ptr(handle, "surface handle")?.as_ptr())
+        }
+        #[cfg(not(windows))]
+        NativeSurface::CompositionHandle { .. } => return Err("composition surfaces need Windows".into()),
+        NativeSurface::Wayland { display, surface } => raw(
+            RawDisplayHandle::Wayland(WaylandDisplayHandle::new(ptr(display, "display")?)),
+            RawWindowHandle::Wayland(WaylandWindowHandle::new(ptr(surface, "surface")?)),
+        ),
+        NativeSurface::Xlib { display, window } => raw(
+            RawDisplayHandle::Xlib(XlibDisplayHandle::new(Some(ptr(display, "display")?), 0)),
+            RawWindowHandle::Xlib(XlibWindowHandle::new(window as std::os::raw::c_ulong)),
+        ),
     };
     let surface = instance
         .create_surface_unsafe(target)
@@ -344,6 +372,12 @@ impl Renderer {
             pointer_bind,
             pointer_size: (aw, ah),
         })
+    }
+
+    /// Show black (when the session ends, so the last frame doesn't linger).
+    pub fn clear(&mut self) {
+        self.texture = None;
+        let _ = self.draw(Crop::full(1, 1), &DisplaySettings::default(), 1.0, None);
     }
 
     pub fn resize(&mut self, width: u32, height: u32) {

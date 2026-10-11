@@ -8,6 +8,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use serde::Serialize;
 use tungstenite::{Message, WebSocket};
 
 use crate::input::{InputSettings, InputState, KeyResult, MouseButton};
@@ -22,14 +23,16 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
 const RECONNECT_DELAY: Duration = Duration::from_secs(2);
 const TAP_HOLD: Duration = Duration::from_millis(60);
 
-#[derive(Debug, Clone, PartialEq, uniffi::Enum)]
+#[derive(Debug, Clone, PartialEq, Serialize, uniffi::Enum)]
+#[serde(tag = "state", rename_all = "camelCase")]
 pub enum ConnectionState {
     Connecting,
     Connected,
     Disconnected { reason: String },
 }
 
-#[derive(Debug, Clone, uniffi::Record)]
+#[derive(Debug, Clone, Default, Serialize, uniffi::Record)]
+#[serde(rename_all = "camelCase")]
 pub struct InputStats {
     pub connected: bool,
     pub messages_sent: u64,
