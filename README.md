@@ -71,7 +71,20 @@ It reads the MiSTer address and NDI source from `local.settings.json` (searched 
 
 A typical test loop: `kvms load-core out.rbf && kvms wait-for-change --until-still 3s --timeout 60s && kvms type 'dir\n' && kvms screenshot --native result.png`.
 
-Optional settings for the CLI: `obs_host` (if NDI discovery can't find the OBS PC), `ssh_user` (default `root`), `core_dest`, `type_delay_ms`, `type_hold_ms`.
+Several MiSTers can be named under `machines` and picked with `--host` (or `-H`); `default` is used when you don't pass one, and `kvms machines` lists them:
+
+```json
+{
+  "default": "mister1",
+  "obs_host": "obs-pc.local",
+  "machines": {
+    "mister1": { "mister_host": "192.168.1.50", "ndi_source": "OBSPC (MiSTer-1)" },
+    "mister2": { "mister_host": "192.168.1.51", "ndi_source": "OBSPC (MiSTer-2)" }
+  }
+}
+```
+
+`kvms --host mister2 screenshot shot.png`. A machine's entries override the top-level ones. Other optional settings (top level or per machine): `obs_host` (IP or name; the OBS PC is then asked directly, for networks where discovery can't find it), `ssh_user` (default `root`), `core_dest`, `type_delay_ms`, `type_hold_ms`. See `local.settings.example.json`.
 
 ## Releases
 

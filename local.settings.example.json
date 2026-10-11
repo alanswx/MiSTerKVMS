@@ -1,10 +1,19 @@
 {
-  "mister_host": "192.168.1.50",
-  "mister_port": 8182,
-  "ndi_source": "OBSPC (MiSTer-1)",
-  "obs_host": "",
+  "default": "mister1",
+  "obs_host": "obs-pc.local",
   "ssh_user": "root",
   "core_dest": "/media/fat/_Development",
   "type_delay_ms": 50,
-  "type_hold_ms": 30
+  "type_hold_ms": 30,
+  "machines": {
+    "mister1": {
+      "mister_host": "192.168.1.50",
+      "ndi_source": "OBSPC (MiSTer-1)"
+    },
+    "mister2": {
+      "mister_host": "192.168.1.51",
+      "ndi_source": "OBSPC (MiSTer-2)",
+      "type_delay_ms": 80
+    }
+  }
 }

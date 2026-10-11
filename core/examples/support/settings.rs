@@ -6,6 +6,14 @@
 
 use std::path::PathBuf;
 
+#[derive(serde::Deserialize, Default, Clone)]
+#[serde(default)]
+struct Machine {
+    mister_host: Option<String>,
+    mister_port: Option<u16>,
+    ndi_source: Option<String>,
+}
+
 #[derive(serde::Deserialize, Default)]
 #[serde(default)]
 pub struct Settings {
@@ -14,6 +22,9 @@ pub struct Settings {
     pub mister_port: Option<u16>,
     /// NDI source carrying that MiSTer's video, e.g. "OBSPC (MiSTer-1)".
     pub ndi_source: String,
+    /// Named machines (same format as the kvms CLI); `default` is applied.
+    machines: std::collections::BTreeMap<String, Machine>,
+    default: Option<String>,
 }
 
 impl Settings {
@@ -26,6 +37,11 @@ impl Settings {
                 .unwrap_or_else(|e| panic!("{}: {e}", path.display())),
             Err(_) => Settings::default(),
         };
+        if let Some(m) = s.default.clone().and_then(|d| s.machines.get(&d).cloned()) {
+            if let Some(v) = m.mister_host { s.mister_host = v; }
+            if let Some(v) = m.ndi_source { s.ndi_source = v; }
+            s.mister_port = m.mister_port.or(s.mister_port);
+        }
         let mut args = std::env::args().skip(1);
         if let Some(host) = args.next() {
             s.mister_host = host;

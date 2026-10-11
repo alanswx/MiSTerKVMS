@@ -129,11 +129,13 @@ impl fmt::Display for VideoError {
 }
 impl std::error::Error for VideoError {}
 
-/// List NDI sources visible on the network (blocks up to `wait_ms`).
+/// List NDI sources visible on the network, also asking `obs_hosts` (IPs or
+/// host names, comma-separated) directly. Blocks up to `wait_ms`; call it off
+/// the main thread.
 #[uniffi::export]
-pub fn ndi_find_sources(extra_ips: String, wait_ms: u32) -> Result<Vec<String>, VideoError> {
+pub fn ndi_find_sources(obs_hosts: String, wait_ms: u32) -> Result<Vec<String>, VideoError> {
     let ndi = ndi::ndi().map_err(|message| VideoError::NdiUnavailable { message })?;
-    Ok(ndi::find_sources(ndi, &extra_ips, wait_ms))
+    Ok(ndi::find_sources(ndi, &obs_hosts, wait_ms))
 }
 
 /// Version string of the loaded NDI runtime, or the reason it couldn't load.

@@ -139,32 +139,86 @@ unsafe fn bind(lib: Library, path: PathBuf) -> Result<Ndi, String> {
     })
 }
 
-/// Discover NDI sources on the network for up to `wait_ms`.
-pub fn find_sources(ndi: &Ndi, extra_ips: &str, wait_ms: u32) -> Vec<String> {
-    let extra = CString::new(extra_ips).unwrap_or_default();
+/// A discovered source: its full name ("MACHINE (Source)") and the address
+/// NDI reports for it ("ip:port"), if any.
+pub struct FoundSource {
+    pub name: String,
+    pub url: Option<String>,
+}
+
+/// Turn "obs-pc.local, 192.168.1.20" into the IP list NDI's finder wants,
+/// resolving host names. Unresolvable names are skipped.
+pub fn resolve_extra_ips(input: &str) -> String {
+    use std::net::{IpAddr, ToSocketAddrs};
+    input
+        .split([',', ' '])
+        .map(str::trim)
+        .filter(|h| !h.is_empty())
+        .filter_map(|h| {
+            if h.parse::<IpAddr>().is_ok() {
+                return Some(h.to_string());
+            }
+            let addrs: Vec<_> = (h, 0).to_socket_addrs().ok()?.collect();
+            addrs.iter().find(|a| a.is_ipv4()).or(addrs.first()).map(|a| a.ip().to_string())
+        })
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+/// Discover NDI sources for up to `wait_ms`, also asking the given OBS hosts
+/// (IPs or names) directly. Returns early once `until` (a full source name)
+/// is seen.
+pub fn find(ndi: &Ndi, extra_hosts: &str, wait_ms: u32, until: Option<&str>) -> Vec<FoundSource> {
+    let ips = resolve_extra_ips(extra_hosts);
+    let extra = CString::new(ips.clone()).unwrap_or_default();
     let settings = NDIlib_find_create_t {
         show_local_sources: true,
         p_groups: ptr::null(),
-        p_extra_ips: if extra_ips.is_empty() { ptr::null() } else { extra.as_ptr() },
+        p_extra_ips: if ips.is_empty() { ptr::null() } else { extra.as_ptr() },
     };
     unsafe {
         let finder = (ndi.find_create)(&settings);
         if finder.is_null() {
             return Vec::new();
         }
+        let read = || {
+            let mut count = 0u32;
+            let sources = (ndi.find_sources)(finder, &mut count);
+            (0..count as usize)
+                .map(|i| {
+                    let s = &*sources.add(i);
+                    let url = s.__bindgen_anon_1.p_url_address;
+                    FoundSource {
+                        name: CStr::from_ptr(s.p_ndi_name).to_string_lossy().into_owned(),
+                        url: (!url.is_null()).then(|| CStr::from_ptr(url).to_string_lossy().into_owned()),
+                    }
+                })
+                .collect::<Vec<_>>()
+        };
         let deadline = std::time::Instant::now() + std::time::Duration::from_millis(wait_ms as u64);
+        let mut found = Vec::new();
         while std::time::Instant::now() < deadline {
             let left = deadline.saturating_duration_since(std::time::Instant::now());
-            (ndi.find_wait)(finder, left.as_millis().min(500) as u32);
+            (ndi.find_wait)(finder, left.as_millis().min(250) as u32);
+            found = read();
+            if until.is_some_and(|name| found.iter().any(|f| f.name == name)) {
+                break;
+            }
         }
-        let mut count = 0u32;
-        let sources = (ndi.find_sources)(finder, &mut count);
-        let names = (0..count as usize)
-            .map(|i| CStr::from_ptr((*sources.add(i)).p_ndi_name).to_string_lossy().into_owned())
-            .collect();
+        if found.is_empty() {
+            found = read();
+        }
         (ndi.find_destroy)(finder);
-        names
+        found
     }
+}
+
+/// Names of the NDI sources visible on the network (and on `extra_hosts`).
+pub fn find_sources(ndi: &Ndi, extra_hosts: &str, wait_ms: u32) -> Vec<String> {
+    let mut names: Vec<String> = find(ndi, extra_hosts, wait_ms, None).into_iter().map(|f| f.name).collect();
+    names.sort();
+    names.dedup();
+    names
 }
 
 pub struct Receiver {
@@ -229,16 +283,23 @@ impl AudioFrame<'_> {
 
 impl Receiver {
     /// Receive full-quality BGRA/BGRX video and float audio from `source`
-    /// (the full NDI name, e.g. "MACHINE (Source)").
-    pub fn new(ndi: &'static Ndi, source: &str, extra_ip: &str, recv_name: &str) -> Option<Self> {
+    /// (the full NDI name, e.g. "MACHINE (Source)"). `obs_host` (IP or name,
+    /// optional) is asked directly, for networks where discovery can't see it;
+    /// we then connect to the address it reports for the source.
+    pub fn new(ndi: &'static Ndi, source: &str, obs_host: &str, recv_name: &str) -> Option<Self> {
+        let url = if obs_host.trim().is_empty() {
+            None
+        } else {
+            find(ndi, obs_host, 3000, Some(source)).into_iter().find(|f| f.name == source).and_then(|f| f.url)
+        };
         let name = CString::new(source).ok()?;
-        let ip = CString::new(extra_ip).ok()?;
+        let ip = CString::new(url.unwrap_or_default()).ok()?;
         let recv_name = CString::new(recv_name).ok()?;
         let settings = NDIlib_recv_create_v3_t {
             source_to_connect_to: NDIlib_source_t {
                 p_ndi_name: name.as_ptr(),
                 __bindgen_anon_1: NDIlib_source_t__bindgen_ty_1 {
-                    p_url_address: if extra_ip.is_empty() { ptr::null() } else { ip.as_ptr() },
+                    p_url_address: if ip.as_bytes().is_empty() { ptr::null() } else { ip.as_ptr() },
                 },
             },
             color_format: NDIlib_recv_color_format_BGRX_BGRA,

@@ -24,6 +24,9 @@ struct Cli {
     /// Settings file (default: local.settings.json in this or a parent folder).
     #[arg(long, global = true)]
     settings: Option<PathBuf>,
+    /// Named machine from the settings file's "machines" (default: its "default").
+    #[arg(long = "host", short = 'H', global = true)]
+    host: Option<String>,
     /// MiSTer address (overrides the settings file).
     #[arg(long, global = true)]
     mister: Option<String>,
@@ -38,6 +41,8 @@ struct Cli {
 enum Cmd {
     /// What's running on the MiSTer, and whether its NDI video is reachable.
     Status,
+    /// List the named machines in the settings file.
+    Machines,
     /// List NDI sources on the network.
     Sources {
         #[arg(long, default_value = "2s")]
@@ -150,6 +155,7 @@ fn main() {
 
 fn run(cli: Cli) -> Result<Value, String> {
     let mut s = Settings::load(cli.settings.as_deref())?;
+    s.select(cli.host.as_deref())?;
     if let Some(m) = cli.mister {
         s.mister_host = m;
     }
@@ -158,6 +164,15 @@ fn run(cli: Cli) -> Result<Value, String> {
     }
     match cli.cmd {
         Cmd::Status => status(&s),
+        Cmd::Machines => Ok(json!({
+            "default": s.default,
+            "machines": s.machines.iter().map(|(name, m)| json!({
+                "name": name,
+                "mister_host": m.mister_host,
+                "ndi_source": m.ndi_source,
+            })).collect::<Vec<_>>(),
+            "settings": s.file,
+        })),
         Cmd::Sources { wait } => {
             let ndi = kvms_core::ndi::ndi()?;
             let sources = kvms_core::ndi::find_sources(ndi, &s.obs_host, duration(&wait)?.as_millis() as u32);
@@ -347,7 +362,7 @@ fn status(s: &Settings) -> Result<Value, String> {
         }
         Err(e) => json!({ "error": e }),
     };
-    Ok(json!({ "mister": mister, "ndi": ndi, "settings": s.file }))
+    Ok(json!({ "machine": s.machine, "mister": mister, "ndi": ndi, "settings": s.file }))
 }
 
 #[derive(serde::Deserialize)]
