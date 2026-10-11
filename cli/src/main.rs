@@ -175,8 +175,16 @@ fn run(cli: Cli) -> Result<Value, String> {
         })),
         Cmd::Sources { wait } => {
             let ndi = kvms_core::ndi::ndi()?;
-            let sources = kvms_core::ndi::find_sources(ndi, &s.obs_host, duration(&wait)?.as_millis() as u32);
-            Ok(json!({ "sources": sources }))
+            let wait = duration(&wait)?.as_millis() as u32;
+            let sources = kvms_core::ndi::find_sources(ndi, &s.obs_host, wait);
+            // Where each source says it can be reached ("ip:port"): a source
+            // advertised on an address this computer can't route to (a VM or
+            // VPN adapter on the OBS PC) is found but never delivers video.
+            let mut addresses = serde_json::Map::new();
+            for f in kvms_core::ndi::find(ndi, &s.obs_host, wait, None) {
+                addresses.insert(f.name, json!(f.url));
+            }
+            Ok(json!({ "sources": sources, "addresses": addresses }))
         }
         Cmd::Screenshot { out, native, full } => {
             if native {
