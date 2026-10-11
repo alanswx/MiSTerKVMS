@@ -18,7 +18,7 @@ use crate::log;
 use crate::profiles::{HostProfile, ProfileStore};
 use crate::session::{ConnectionState, InputStats, MisterSession, SessionObserver};
 use crate::video::ffmpeg::FfmpegRecorder;
-use crate::video::{CursorModel, DisplaySettings, MediaSink, NativeSurface, VideoSession, VideoStats};
+use crate::video::{CursorModel, DisplaySettings, FrameOutput, MediaSink, NativeSurface, VideoSession, VideoStats};
 
 const TICK: Duration = Duration::from_millis(500);
 /// How long the stats overlay stays up after something changes.
@@ -108,6 +108,8 @@ struct State {
     session: Option<Arc<MisterSession>>,
     video: Option<Arc<VideoSession>>,
     surface: Option<(NativeSurface, u32, u32, f32)>,
+    /// Where pictures go for an `Offscreen` surface.
+    frames: Option<Arc<FrameOutput>>,
     /// Bumped per session so late callbacks from a closed one are ignored.
     generation: u64,
     capture_on_connect: bool,
@@ -136,6 +138,7 @@ impl Default for State {
             session: None,
             video: None,
             surface: None,
+            frames: None,
             generation: 0,
             capture_on_connect: false,
             connection: not_connected(),
@@ -574,6 +577,12 @@ impl Controller {
 }
 
 impl Controller {
+    /// Draw into memory instead of a view (`NativeSurface::Offscreen`): each
+    /// picture goes to `frames`. Call before `attach_surface`.
+    pub fn set_frame_output(&self, frames: Option<Arc<FrameOutput>>) {
+        self.inner.state.lock().unwrap().frames = frames;
+    }
+
     fn with_store(store: ProfileStore, observer: Arc<dyn ControllerObserver>) -> Arc<Self> {
         let inner = Arc::new_cyclic(|me| Inner {
             me: me.clone(),
@@ -692,7 +701,8 @@ impl Inner {
         if s.video.is_some() || profile.ndi_source.is_empty() || w < 2 || h < 2 {
             return;
         }
-        match VideoSession::with_surface(profile.ndi_source.clone(), profile.obs_host.clone(), surface, w, h, scale) {
+        let frames = s.frames.clone();
+        match VideoSession::start(profile.ndi_source.clone(), profile.obs_host.clone(), surface, frames, w, h, scale) {
             Ok(video) => {
                 video.set_display(s.display.clone());
                 video.set_muted(s.muted);

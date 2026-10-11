@@ -68,6 +68,54 @@ pub enum NativeSurface {
     CompositionHandle { handle: u64 },
     Wayland { display: u64, surface: u64 },
     Xlib { display: u64, window: u64 },
+    /// No view: the picture is rendered into memory and handed to the shell
+    /// through a `FrameOutput` (GTK, which can't give wgpu a surface).
+    Offscreen,
+}
+
+/// One finished picture, as the shell should show it (BGRA, rows `stride`
+/// bytes apart, sized to the view in pixels).
+pub struct RenderedFrame {
+    pub width: u32,
+    pub height: u32,
+    pub stride: u32,
+    pub data: Vec<u8>,
+}
+
+/// Where an `Offscreen` session puts its pictures. `notify` runs on the
+/// render thread after each one; the shell then `take`s the latest.
+pub struct FrameOutput {
+    latest: Mutex<Option<RenderedFrame>>,
+    spare: Mutex<Option<Vec<u8>>>,
+    notify: Box<dyn Fn() + Send + Sync>,
+}
+
+impl FrameOutput {
+    pub fn new(notify: impl Fn() + Send + Sync + 'static) -> Arc<Self> {
+        Arc::new(Self { latest: Mutex::new(None), spare: Mutex::new(None), notify: Box::new(notify) })
+    }
+
+    /// The newest picture since the last call, if any.
+    pub fn take(&self) -> Option<RenderedFrame> {
+        self.latest.lock().unwrap().take()
+    }
+
+    /// Hand a picture's buffer back once it has been copied, to save an
+    /// allocation per frame.
+    pub fn recycle(&self, data: Vec<u8>) {
+        *self.spare.lock().unwrap() = Some(data);
+    }
+
+    pub(crate) fn spare(&self) -> Vec<u8> {
+        self.spare.lock().unwrap().take().unwrap_or_default()
+    }
+
+    pub(crate) fn put(&self, frame: RenderedFrame) {
+        if let Some(old) = self.latest.lock().unwrap().replace(frame) {
+            self.recycle(old.data); // the shell didn't get to it
+        }
+        (self.notify)();
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, uniffi::Record)]
@@ -281,6 +329,21 @@ impl VideoSession {
         height_px: u32,
         points_scale: f32,
     ) -> Result<Arc<Self>, VideoError> {
+        Self::start(ndi_source, extra_ip, surface, None, width_px, height_px, points_scale)
+    }
+}
+
+impl VideoSession {
+    /// `with_surface`, plus where `Offscreen` pictures go.
+    pub fn start(
+        ndi_source: String,
+        extra_ip: String,
+        surface: NativeSurface,
+        frames: Option<Arc<FrameOutput>>,
+        width_px: u32,
+        height_px: u32,
+        points_scale: f32,
+    ) -> Result<Arc<Self>, VideoError> {
         let ndi = ndi::ndi().map_err(|message| VideoError::NdiUnavailable { message })?;
         log(&format!("video: start '{ndi_source}' (obs host '{extra_ip}', {width_px}x{height_px} px)"));
         // SAFETY: the shell keeps the view alive until stop() returns.
@@ -312,7 +375,7 @@ impl VideoSession {
                 // wgpu reports setup mistakes by panicking; turn that into an
                 // error message the UI can show.
                 let created = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    render::Renderer::new(&instance, surface, width_px, height_px)
+                    render::Renderer::new(&instance, surface, frames, width_px, height_px)
                 }))
                 .unwrap_or_else(|panic| Err(format!("renderer setup failed: {}", panic_message(&panic))));
                 match created {
@@ -343,6 +406,10 @@ impl VideoSession {
             input: Mutex::new(None),
         }))
     }
+}
+
+#[uniffi::export]
+impl VideoSession {
 
     /// The view's drawable size in pixels and its pixels-per-point.
     pub fn resize(&self, width_px: u32, height_px: u32, points_scale: f32) {

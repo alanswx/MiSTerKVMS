@@ -127,6 +127,14 @@ pub fn hid_to_linux(usage: u16) -> Option<u16> {
     Some(code)
 }
 
+/// Linux evdev key code (what X11/Wayland report, minus 8) → USB HID usage:
+/// the inverse of `hid_to_linux`. Linux codes are what mrext sends on, so
+/// every key MiSTer can receive has an answer.
+pub fn linux_to_hid(code: u16) -> Option<u16> {
+    // 0x31 (backslash) comes before 0x32 (ISO #), which shares its code.
+    (0x04..=0xE7u16).find(|&usage| hid_to_linux(usage) == Some(code))
+}
+
 /// PC keyboard scan code (set 1, as Windows reports it) → USB HID usage.
 /// `extended` is the E0 prefix (LLKHF_EXTENDED). Layout-independent: the
 /// key's position, not its label. Pause and Num Lock share scan code 0x45
@@ -288,6 +296,20 @@ mod tests {
         // Fake shifts around navigation keys are dropped.
         assert_eq!(scancode_to_hid(0x2A, true), None);
         assert_eq!(scancode_to_hid(0x36, true), None);
+    }
+
+    #[test]
+    fn linux_codes_round_trip() {
+        for usage in 0x04..=0xE7u16 {
+            if let Some(code) = hid_to_linux(usage) {
+                let back = linux_to_hid(code).unwrap();
+                assert_eq!(hid_to_linux(back), Some(code), "HID {usage:#x}");
+            }
+        }
+        assert_eq!(linux_to_hid(43), Some(0x31)); // backslash, not ISO #
+        assert_eq!(linux_to_hid(100), Some(hid::RIGHT_ALT));
+        assert_eq!(linux_to_hid(126), Some(hid::RIGHT_GUI));
+        assert_eq!(linux_to_hid(0), None);
     }
 
     #[test]
