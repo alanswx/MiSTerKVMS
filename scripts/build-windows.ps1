@@ -25,11 +25,6 @@ Write-Host "==> Rust core $Version ($Triple)"
 cargo build --release --target $Triple -p kvms-core -p kvms-cli
 if ($LASTEXITCODE) { exit $LASTEXITCODE }
 
-# A running copy keeps the core DLL locked.
-Get-Process MiSTerKVMS -ErrorAction SilentlyContinue | ForEach-Object {
-    throw "MiSTerKVMS is running (pid $($_.Id)); close it first."
-}
-
 if ($Package) {
     Write-Host "==> Publish ($Platform)"
     $Out = "build\MiSTerKVMS-$Version-win-$Arch"
@@ -44,6 +39,10 @@ if ($Package) {
     Write-Host "Built $Zip"
     $Exe = "$Out\MiSTerKVMS.exe"
 } else {
+    # A running copy keeps the core DLL in the build folder locked.
+    Get-Process MiSTerKVMS -ErrorAction SilentlyContinue | ForEach-Object {
+        throw "MiSTerKVMS is running (pid $($_.Id)); close it first."
+    }
     Write-Host "==> App ($Configuration, $Platform)"
     dotnet build $Project -c $Configuration -p:Platform=$Platform -p:Version=$Version
     if ($LASTEXITCODE) { exit $LASTEXITCODE }
