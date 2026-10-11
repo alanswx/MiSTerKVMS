@@ -87,7 +87,12 @@ jobs:
         run: |
           if [ "$HAS_NOTARY" = "true" ] && [ "$HAS_CERT" = "true" ]; then
             export NOTARY_KEY_PATH="$RUNNER_TEMP/notary.p8"
-            echo "$APPLE_API_KEY_P8" | base64 --decode > "$NOTARY_KEY_PATH"
+            # Accept the .p8 pasted as-is or base64-encoded.
+            if printf '%s' "$APPLE_API_KEY_P8" | grep -q "BEGIN PRIVATE KEY"; then
+              printf '%s\n' "$APPLE_API_KEY_P8" > "$NOTARY_KEY_PATH"
+            else
+              echo "$APPLE_API_KEY_P8" | base64 --decode > "$NOTARY_KEY_PATH"
+            fi
           fi
           scripts/package-dmg.sh "build/MiSTerKVMS-${{ steps.version.outputs.version }}.dmg"
           rm -f "$RUNNER_TEMP/notary.p8"
