@@ -740,7 +740,13 @@ impl Ui {
             self.mute_button.set_active(s.muted);
         }
         self.mute_button.set_icon_name(if s.muted { "audio-volume-muted-symbolic" } else { "audio-volume-high-symbolic" });
-        self.stats_pin.set_icon_name(if s.stats_pinned { "view-pin-symbolic" } else { "pin-symbolic" });
+        // Adwaita has one pin icon: dimmed when not pinned.
+        self.stats_pin.set_opacity(if s.stats_pinned { 1.0 } else { 0.45 });
+        self.stats_pin.set_tooltip_text(Some(if s.stats_pinned {
+            "Unpin: hide automatically (Ctrl+Shift+I)"
+        } else {
+            "Pin: always show (Ctrl+Shift+I)"
+        }));
 
         self.render_placeholder(profile.as_ref(), &s, video_up);
         self.render_stats(&s, open);
