@@ -242,6 +242,12 @@ Resolved: Q-F → D14 (no required ini changes), Q-G → D15 (MIT), Q-H → D16 
 
 ---
 
+## 7b. Shelved ideas
+
+- **Video straight from the MiSTer (no capture card/OBS).** The HDMI scaler keeps each frame at the core's native resolution in DDR (`0x20000000`, header with width/height; Main_MiSTer's `scaler.cpp` reads it for screenshots). A MiSTer-side service could stream it: native pixels, ~30–60 ms instead of ~180 ms, true frame rate.
+  - **Shelved (2026-10-11) as too risky for now.** The DE10-Nano's 2×800 MHz ARM can't do H.264, so it would need delta + fast compression (fine for desktops, drops on full-screen motion). It also adds CPU and DDR load that some cores need, only works with the scaler (not `direct_video`), and needs a service installed on the MiSTer.
+  - **No audio either way:** sound never reaches Linux on the MiSTer, so audio would still need the capture path.
+
 ## 8. Progress (2026-10-10)
 
 - **Spike 1 (input): built.** Rust core (`core/`) with mrext WS client, HID→Linux keymap, exit chord, stuck-key release, alt-click→middle, 250 Hz mouse coalescing. Swift shell (`apple/`) with host sidebar, CGEventTap capture (in-app fallback without Accessibility), F12 toolbar button.
