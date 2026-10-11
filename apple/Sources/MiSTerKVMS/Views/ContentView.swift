@@ -36,11 +36,17 @@ struct ContentView: View {
                 }
             }
         } detail: {
-            if let profile = controller.profile {
-                SessionView(profile: profile, onEdit: { editing = profile })
-            } else {
-                ContentUnavailableView("Select a Host", systemImage: "sidebar.left",
-                                       description: Text("Choose a MiSTer in the sidebar to connect."))
+            // The banner belongs to the detail column; on the whole split view
+            // it would draw over the sidebar.
+            VStack(spacing: 0) {
+                AccessibilityBanner()
+                if let profile = controller.profile {
+                    SessionView(profile: profile, onEdit: { editing = profile })
+                } else {
+                    ContentUnavailableView("Select a Host", systemImage: "sidebar.left",
+                                           description: Text("Choose a MiSTer in the sidebar to connect."))
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                }
             }
         }
         .sheet(item: $editing) { profile in
@@ -59,7 +65,6 @@ struct ContentView: View {
                 controller.close()
             }
         }
-        .safeAreaInset(edge: .top) { AccessibilityBanner() }
         .onAppear { controller.profiles = profiles }
     }
 
@@ -102,6 +107,7 @@ private struct AccessibilityBanner: View {
                     VStack(alignment: .leading, spacing: 2) {
                         Text("Allow Accessibility to send every key to MiSTer").fontWeight(.semibold)
                         Text("Without it, macOS keeps shortcuts like ⌘Tab, ⌘Space and ⌘Q for itself. MiSTerKVMS only intercepts input while you're in capture mode.")
+                        Text("Already switched on? macOS ties the permission to the app's signature, so a newer or differently signed copy needs it again: remove MiSTerKVMS from the list with −, add it back, and reopen the app.")
                             .font(.caption).foregroundStyle(.secondary)
                     }
                     Spacer()
