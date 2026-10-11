@@ -55,8 +55,9 @@ impl WaylandPointer {
             .ok_or("no Wayland surface")?;
         let pointer = display
             .default_seat()
-            .and_then(|s| s.downcast::<gdk_wayland::WaylandSeat>().ok())
-            .and_then(|s| s.wl_pointer())
+            .and_then(|s| s.pointer())
+            .and_then(|d| d.downcast::<gdk_wayland::WaylandDevice>().ok())
+            .and_then(|d| d.wl_pointer())
             .ok_or("no Wayland pointer")?;
 
         let (globals, mut queue): (_, EventQueue<State>) =
