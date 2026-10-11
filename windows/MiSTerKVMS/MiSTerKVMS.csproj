@@ -1,0 +1,39 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows10.0.19041.0</TargetFramework>
+    <TargetPlatformMinVersion>10.0.19041.0</TargetPlatformMinVersion>
+    <RootNamespace>MiSTerKVMS</RootNamespace>
+    <Platforms>x64;ARM64</Platforms>
+    <RuntimeIdentifiers>win-x64;win-arm64</RuntimeIdentifiers>
+    <UseWinUI>true</UseWinUI>
+    <WindowsPackageType>None</WindowsPackageType>
+    <WindowsAppSDKSelfContained>true</WindowsAppSDKSelfContained>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <ApplicationIcon>Assets\AppIcon.ico</ApplicationIcon>
+    <Product>MiSTerKVMS</Product>
+    <Company>MiSTerKVMS</Company>
+    <Copyright>MIT License</Copyright>
+    <!-- Overridden by the build script / CI with the release version. -->
+    <Version>0.9.0</Version>
+    <!-- The Rust core for this architecture (built by scripts/build-windows.ps1). -->
+    <KvmsRustTarget Condition="'$(Platform)' == 'ARM64'">aarch64-pc-windows-msvc</KvmsRustTarget>
+    <KvmsRustTarget Condition="'$(KvmsRustTarget)' == ''">x86_64-pc-windows-msvc</KvmsRustTarget>
+    <KvmsCoreDir Condition="'$(KvmsCoreDir)' == ''">$(MSBuildThisFileDirectory)..\..\target\$(KvmsRustTarget)\release\</KvmsCoreDir>
+  </PropertyGroup>
+  <ItemGroup>
+    <Content Include="Assets\**" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="$(KvmsCoreDir)kvms_core.dll" Link="kvms_core.dll" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="$(KvmsCoreDir)kvms.exe" Link="kvms.exe" CopyToOutputDirectory="PreserveNewest" Condition="Exists('$(KvmsCoreDir)kvms.exe')" />
+  </ItemGroup>
+  <Target Name="CheckKvmsCore" BeforeTargets="Build">
+    <Error Condition="!Exists('$(KvmsCoreDir)kvms_core.dll')"
+           Text="Rust core not built: $(KvmsCoreDir)kvms_core.dll is missing. Run scripts/build-windows.ps1 (or cargo build --release --target $(KvmsRustTarget) -p kvms-core -p kvms-cli)." />
+  </Target>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Windows.SDK.BuildTools" Version="10.0.28000.2705" />
+    <PackageReference Include="Microsoft.WindowsAppSDK" Version="2.5.1" />
+  </ItemGroup>
+</Project>
