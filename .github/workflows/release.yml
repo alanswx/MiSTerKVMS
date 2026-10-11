@@ -70,6 +70,36 @@ jobs:
           identity=$(security find-identity -v -p codesigning "$keychain" | grep "Developer ID Application" | head -1 | sed 's/.*"\(.*\)"/\1/')
           echo "identity=$identity" >> "$GITHUB_OUTPUT"
 
+      - name: Check notarization credentials
+        if: env.HAS_NOTARY == 'true'
+        env:
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+          NOTARY_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          NOTARY_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
+        run: |
+          # Report the shape of each value (never the values) and test the login
+          # before spending time on the build.
+          key="$RUNNER_TEMP/check.p8"
+          if printf '%s' "$APPLE_API_KEY_P8" | grep -q "BEGIN PRIVATE KEY"; then
+            printf '%s\n' "$APPLE_API_KEY_P8" > "$key"; echo ".p8: pasted as text"
+          else
+            echo "$APPLE_API_KEY_P8" | base64 --decode > "$key" 2>/dev/null; echo ".p8: base64"
+          fi
+          grep -q "BEGIN PRIVATE KEY" "$key" && echo ".p8: looks like a private key ($(wc -l < "$key") lines)" || echo "::warning::.p8 secret doesn't decode to a private key"
+          kid=$(printf '%s' "$NOTARY_KEY_ID" | tr -d '[:space:]')
+          [ "$kid" = "$NOTARY_KEY_ID" ] || echo "::warning::APPLE_API_KEY_ID contains spaces or newlines"
+          echo "Key ID length: ${#kid} (expected 10)"
+          iss=$(printf '%s' "$NOTARY_ISSUER_ID" | tr -d '[:space:]')
+          [ "$iss" = "$NOTARY_ISSUER_ID" ] || echo "::warning::APPLE_API_ISSUER_ID contains spaces or newlines"
+          echo "$iss" | grep -Eq '^[0-9a-fA-F-]{36}$' && echo "Issuer ID: looks like a UUID" || echo "::warning::APPLE_API_ISSUER_ID doesn't look like a UUID"
+          if ! xcrun notarytool history --key "$key" --key-id "$kid" --issuer "$iss" > /dev/null; then
+            rm -f "$key"
+            echo "::error::Apple rejected the App Store Connect API key: check that APPLE_API_KEY_ID matches the .p8 (AuthKey_<KEYID>.p8) and that it's a Team key from the team whose Issuer ID you used."
+            exit 1
+          fi
+          rm -f "$key"
+          echo "Notarization credentials accepted."
+
       - name: Build universal app
         env:
           UNIVERSAL: "1"
@@ -85,6 +115,8 @@ jobs:
           NOTARY_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
           NOTARY_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
         run: |
+          export NOTARY_KEY_ID=$(printf '%s' "$NOTARY_KEY_ID" | tr -d '[:space:]')
+          export NOTARY_ISSUER_ID=$(printf '%s' "$NOTARY_ISSUER_ID" | tr -d '[:space:]')
           if [ "$HAS_NOTARY" = "true" ] && [ "$HAS_CERT" = "true" ]; then
             export NOTARY_KEY_PATH="$RUNNER_TEMP/notary.p8"
             # Accept the .p8 pasted as-is or base64-encoded.
