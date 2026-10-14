@@ -86,7 +86,7 @@ pub enum Item {
 impl Source {
     pub fn open(name: &str, extra_ip: &str) -> Result<Self, String> {
         let ndi = ndi::ndi()?;
-        let rx = Receiver::new(ndi, name, extra_ip, "kvms-cli").ok_or("could not create NDI receiver")?;
+        let rx = Receiver::new(ndi, name, extra_ip, "misterkvms-cli").ok_or("could not create NDI receiver")?;
         Ok(Self { rx })
     }
 
@@ -182,7 +182,7 @@ pub fn record(src: &Source, duration: Duration, out: &Path, full: bool) -> Resul
     let first = src.fresh_frame(Duration::from_secs(5))?;
     let area = first.area(full);
     let start_ts = first.timestamp;
-    let tmp = std::env::temp_dir().join(format!("kvms-rec-{}", std::process::id()));
+    let tmp = std::env::temp_dir().join(format!("misterkvms-rec-{}", std::process::id()));
     std::fs::create_dir_all(&tmp).map_err(|e| e.to_string())?;
     let tmp_video = tmp.join("video.mp4");
     let tmp_audio = tmp.join("audio.wav");

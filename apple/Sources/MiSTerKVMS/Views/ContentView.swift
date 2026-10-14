@@ -1,3 +1,4 @@
+import KVMSCore
 import SwiftUI
 
 struct ContentView: View {
@@ -21,7 +22,7 @@ struct ContentView: View {
             .navigationSplitViewColumnWidth(min: 200, ideal: 240)
             .toolbar {
                 ToolbarItem {
-                    Button { editing = HostProfile() } label: { Label("Add Host", systemImage: "plus") }
+                    Button { editing = HostProfile.make() } label: { Label("Add Host", systemImage: "plus") }
                 }
             }
             .overlay {
@@ -29,9 +30,9 @@ struct ContentView: View {
                     ContentUnavailableView {
                         Label("No Hosts", systemImage: "display.2")
                     } description: {
-                        Text("Add a MiSTer and the NDI source that carries its video.")
+                        Text("Add a MiSTer: a stream from MiSTerKVMS Capture, or a capture card on this Mac.")
                     } actions: {
-                        Button("Add Host…") { editing = HostProfile() }
+                        Button("Add Host…") { editing = HostProfile.make() }
                     }
                 }
             }
@@ -51,11 +52,7 @@ struct ContentView: View {
         }
         .sheet(item: $editing) { profile in
             ProfileEditor(profile: profile) { saved in
-                profiles.upsert(saved)
-                if controller.profile?.id == saved.id {
-                    controller.close()
-                    controller.open(saved)
-                }
+                controller.save(saved)
             }
         }
         .onChange(of: selection) { _, id in
@@ -65,7 +62,6 @@ struct ContentView: View {
                 controller.close()
             }
         }
-        .onAppear { controller.profiles = profiles }
     }
 
     private func delete(_ id: HostProfile.ID) {
@@ -87,7 +83,7 @@ private struct HostRow: View {
                     Image(systemName: "dot.radiowaves.left.and.right").foregroundStyle(.green)
                 }
             }
-            Text(profile.misterHost.isEmpty ? "No address" : profile.misterHost)
+            Text(profile.subtitle)
                 .font(.caption).foregroundStyle(.secondary)
         }
         .padding(.vertical, 2)

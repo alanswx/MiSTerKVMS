@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=MiSTerKVMS
+Comment=Keyboard, mouse, video and sound for your MiSTer FPGAs, over the network
+Exec=misterkvms
+Icon=io.github.misterkvms.MiSTerKVMS
+Terminal=false
+Categories=Utility;RemoteAccess;Network;
+Keywords=MiSTer;FPGA;KVM;NDI;
+StartupNotify=true

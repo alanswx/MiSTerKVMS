@@ -258,7 +258,7 @@ Resolved: Q-F → D14 (no required ini changes), Q-G → D15 (MIT), Q-H → D16 
 ### Since then
 - **Predictive cursor** (green while ahead, black when synced, amber when lost), with latency/gain learned over a rolling minute and saved per host. **Raw mouse input** option (no double acceleration).
 - **Recording** to MP4 (H.264 + AAC) through the core's `MediaSink` hook and AVFoundation.
-- **`kvms` CLI** for core development: status, screenshots (capture or MiSTer-native), recording, frames, typing, key combos, mouse, wait-for-change, load-core. Ships inside the app.
+- **`misterkvms-cli` CLI** (was `kvms`) for core development: status, screenshots (capture or MiSTer-native), recording, frames, typing, key combos, mouse, wait-for-change, load-core. Ships inside the app.
 - App **icon** (MiSTer-Kun on a retro computer) and **About** window with credits.
 - **Release pipeline:** universal DMG on every push to `main`, optional Developer ID signing and notarization.
 - **Port plans:** [PORTING.md](PORTING.md), [PORT-WINDOWS.md](PORT-WINDOWS.md), [PORT-LINUX.md](PORT-LINUX.md).

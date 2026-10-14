@@ -25,9 +25,14 @@
 	<key>NSPrincipalClass</key>
 	<string>NSApplication</string>
 	<key>NSLocalNetworkUsageDescription</key>
-	<string>MiSTerKVMS connects to your MiSTer and OBS PC on the local network to send keyboard and mouse input and receive video.</string>
+	<string>MiSTerKVMS connects to your MiSTer and capture PC on the local network to send keyboard and mouse input and receive video.</string>
+	<key>NSCameraUsageDescription</key>
+	<string>MiSTerKVMS shows the picture from a capture card connected to this Mac.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>MiSTerKVMS plays the sound from a capture card connected to this Mac.</string>
 	<key>NSBonjourServices</key>
 	<array>
+		<string>_mkvm._tcp</string>
 		<string>_ndi._tcp</string>
 	</array>
 </dict>

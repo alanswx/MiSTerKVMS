@@ -9,3 +9,7 @@
 
 # Personal test settings (MiSTer/OBS addresses); see local.settings.example.json
 /local.settings.json
+
+# Windows shell build output
+/windows/MiSTerKVMS/bin/
+/windows/MiSTerKVMS/obj/

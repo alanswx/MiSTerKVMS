@@ -4,6 +4,18 @@ Prerequisite: the shared groundwork in [PORTING.md](PORTING.md) §2 (profiles an
 
 Target: Windows 10 22H2 and Windows 11, x64 first, ARM64 second.
 
+## Status (October 2026)
+
+W0–W5 and W7 (unsigned) are done; the app is in `windows/`, built by `scripts/build-windows.ps1` and CI. Where it differs from the plan below:
+
+- **Bindings:** a small hand-written C interface (`core/src/capi.rs`: create/free the controller, one JSON request/reply call, and an event callback) instead of uniffi-bindgen-cs, which lags our UniFFI version. Almost everything goes through the core `Controller`, so the surface stays tiny.
+- **Video surface:** neither a child HWND nor a SwapChainPanel. The core creates a DirectComposition surface handle; wgpu builds its swap chain on it (`NativeSurface::CompositionHandle`), and the shell wraps the handle with `ICompositorSwapChainInterop::CreateCompositionSurfaceForHandle` in a brush on a XAML visual. No airspace problem, so the stats overlay, capture hint and dialogs stay in XAML; no UI-thread swap-chain calls, and DPI is handled by sizing the swap chain in pixels.
+- **Input capture lives in the core** (`core/src/win/capture.rs`), on its own thread: low-level keyboard + mouse hooks (both swallowed), Raw Input for raw mode, the pointer parked and hidden under a 1-pixel window of ours, AltGr's fake Left Ctrl dropped (scan code 0x21D or same timestamp), and it ends on the chord, focus loss or disconnect. Accelerated movement is divided by the display scale, so it's in points like on macOS.
+- **Recording (W6):** the core's ffmpeg recorder (`core/src/video/ffmpeg.rs`) rather than Media Foundation; needs ffmpeg on the PATH or next to the app.
+- **Packaging:** a self-contained zip (WinUI component packages only, ~70 MB). MSIX, signing and winget are still to do; so is ARM64 (check NDI's ARM64 runtime first).
+
+Still to verify by hand: an AltGr layout, Raw Input on a high-DPI mouse, mixed-DPI monitors, an 8-hour soak (§8).
+
 ## 1. Architecture
 
 ```
@@ -72,7 +84,7 @@ UIPI note: the hook doesn't see input when an elevated window has focus. That's 
 - **About:** WinUI `ContentDialog` or page with the same credits.
 - **App icon:** `make_icon.py` also writes an `.ico` (16, 24, 32, 48, 64, 256), using Pillow or `magick`.
 - **Theme:** follow the system light/dark theme. Mica backdrop.
-- **CLI:** `kvms.exe` built by the same CI. Uses Windows' built-in OpenSSH `ssh`/`scp` for `load-core`. `ffmpeg` is optional, for MP4.
+- **CLI:** `misterkvms-cli.exe` built by the same CI. Uses Windows' built-in OpenSSH `ssh`/`scp` for `load-core`. `ffmpeg` is optional, for MP4.
 
 ## 6. Packaging, signing, distribution
 
@@ -92,7 +104,7 @@ UIPI note: the hook doesn't see input when an elevated window has focus. That's 
 | # | Milestone | Done when |
 |---|---|---|
 | W0 | Groundwork (PORTING §2) merged | macOS app runs on the core controller and profiles |
-| W1 | `kvms.exe` in releases | CLI works against a MiSTer from Windows |
+| W1 | `misterkvms-cli.exe` in releases | CLI works against a MiSTer from Windows |
 | W2 | Bindings spike | C# console app drives `MisterSession` through uniffi-bindgen-cs (or the C ABI fallback) |
 | W3 | Video spike | Child HWND (or SwapChainPanel) shows the NDI stream through wgpu D3D12, with resize/DPI |
 | W4 | Input spike | Hook + Raw Input + ClipCursor capture; exit chord incl. AltGr handling; keys verified on HP9K715 and a DOS core |

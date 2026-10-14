@@ -1,16 +1,24 @@
 [package]
 name = "kvms-cli"
-description = "kvms: drive a MiSTer from the command line (screenshots, recording, input, cores)."
+description = "misterkvms-cli: drive a MiSTer from the command line (screenshots, recording, input, cores)."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 
 [[bin]]
-name = "kvms"
+name = "misterkvms-cli"
 path = "src/main.rs"
+
+# The old name, kept for one release.
+[[bin]]
+name = "kvms"
+path = "src/kvms_alias.rs"
 
 [dependencies]
 kvms-core = { path = "../core" }
+kvms-codec = { path = "../codec" }
+mkvm = { path = "../mkvm" }
+memory-stats = "1"
 clap = { version = "4", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

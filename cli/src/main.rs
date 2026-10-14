@@ -1,10 +1,12 @@
-//! kvms: drive a MiSTer from the command line. Screenshots, recording,
-//! keyboard/mouse and core loading, for testing and debugging cores.
-//! Every command prints one JSON object on stdout (errors: JSON on stderr,
-//! exit code 1), so it's easy to script.
+// misterkvms-cli: drive a MiSTer from the command line. Screenshots, recording,
+// keyboard/mouse and core loading, for testing and debugging cores.
+// Every command prints one JSON object on stdout (errors: JSON on stderr,
+// exit code 1), so it's easy to script.
 
 mod media;
 mod settings;
+mod soak;
+mod stream;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -19,7 +21,7 @@ use media::{Item, Source};
 use settings::Settings;
 
 #[derive(Parser)]
-#[command(name = "kvms", version, about = "Drive a MiSTer from the command line: screenshots, recording, input, cores.")]
+#[command(name = "misterkvms-cli", version, about = "Drive a MiSTer from the command line: screenshots, recording, input, cores.")]
 struct Cli {
     /// Settings file (default: local.settings.json in this or a parent folder).
     #[arg(long, global = true)]
@@ -111,6 +113,44 @@ enum Cmd {
         #[arg(long)]
         full: bool,
     },
+    /// Watch a capture server stream like a viewer and report what arrived
+    /// (fps, size, bandwidth, latency). E.g. `stream mkvm://capture-pc/MiSTer-1`.
+    Stream {
+        address: String,
+        #[arg(long, default_value = "5s")]
+        duration: String,
+        /// Largest picture to ask for, e.g. 1280x720 (default: native).
+        #[arg(long)]
+        max: Option<String>,
+        /// Save the last picture as PNG.
+        #[arg(long)]
+        save: Option<PathBuf>,
+    },
+    /// List capture server streams found on the network.
+    Streams {
+        #[arg(long, default_value = "2s")]
+        wait: String,
+    },
+    /// Run a full app session (offscreen) and watch memory; fails if it keeps
+    /// growing. One source: --stream, --local or --ndi.
+    Soak {
+        /// e.g. 10m, 8h
+        duration: String,
+        /// Capture server stream (mkvm://host/stream).
+        #[arg(long)]
+        stream: Option<String>,
+        /// Capture card on this computer (id or name; test:pattern works).
+        #[arg(long)]
+        local: Option<String>,
+        /// NDI source name.
+        #[arg(long)]
+        ndi: Option<String>,
+        #[arg(long, default_value = "10s")]
+        every: String,
+        /// Allowed growth after warm-up, MB.
+        #[arg(long, default_value_t = 50.0)]
+        limit_mb: f64,
+    },
     /// Copy a core (.rbf) to the MiSTer over SSH and load it.
     LoadCore {
         rbf: PathBuf,
@@ -143,6 +183,7 @@ enum MouseCmd {
 }
 
 fn main() {
+    warn_old_name();
     let cli = Cli::parse();
     match run(cli) {
         Ok(v) => println!("{v}"),
@@ -150,6 +191,17 @@ fn main() {
             eprintln!("{}", json!({ "error": e }));
             std::process::exit(1);
         }
+    }
+}
+
+/// Run as `kvms` (the old name): say so, but only to a person at a terminal,
+/// so scripts reading stderr still get JSON only.
+fn warn_old_name() {
+    use std::io::IsTerminal;
+    let invoked = std::env::args_os().next().map(PathBuf::from);
+    let stem = invoked.as_deref().and_then(Path::file_stem).and_then(|s| s.to_str());
+    if stem == Some("kvms") && std::io::stderr().is_terminal() {
+        eprintln!("note: `kvms` is now `misterkvms-cli`; the old name goes away in the next release.");
     }
 }
 
@@ -163,6 +215,24 @@ fn run(cli: Cli) -> Result<Value, String> {
         s.ndi_source = n;
     }
     match cli.cmd {
+        Cmd::Stream { address, duration: d, max, save } => {
+            let max = match max {
+                Some(m) => {
+                    let (w, h) = m.split_once(['x', 'X']).ok_or("--max is WIDTHxHEIGHT")?;
+                    Some((w.parse().map_err(|_| "bad --max width")?, h.parse().map_err(|_| "bad --max height")?))
+                }
+                None => None,
+            };
+            stream::watch(&address, duration(&d)?, max, save.as_deref())
+        }
+        Cmd::Streams { wait } => {
+            let found = kvms_core::discover::find_streams(duration(&wait)?.as_millis() as u32);
+            Ok(json!({ "streams": found }))
+        }
+        Cmd::Soak { duration: d, stream, local, ndi, every, limit_mb } => {
+            let source = soak::SoakSource { stream, local, ndi };
+            soak::soak(source, duration(&d)?, duration(&every)?, limit_mb)
+        }
         Cmd::Status => status(&s),
         Cmd::Machines => Ok(json!({
             "default": s.default,
@@ -175,8 +245,16 @@ fn run(cli: Cli) -> Result<Value, String> {
         })),
         Cmd::Sources { wait } => {
             let ndi = kvms_core::ndi::ndi()?;
-            let sources = kvms_core::ndi::find_sources(ndi, &s.obs_host, duration(&wait)?.as_millis() as u32);
-            Ok(json!({ "sources": sources }))
+            let wait = duration(&wait)?.as_millis() as u32;
+            let sources = kvms_core::ndi::find_sources(ndi, &s.obs_host, wait);
+            // Where each source says it can be reached ("ip:port"): a source
+            // advertised on an address this computer can't route to (a VM or
+            // VPN adapter on the OBS PC) is found but never delivers video.
+            let mut addresses = serde_json::Map::new();
+            for f in kvms_core::ndi::find(ndi, &s.obs_host, wait, None) {
+                addresses.insert(f.name, json!(f.url));
+            }
+            Ok(json!({ "sources": sources, "addresses": addresses }))
         }
         Cmd::Screenshot { out, native, full } => {
             if native {

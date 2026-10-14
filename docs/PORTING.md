@@ -2,6 +2,8 @@
 
 The Windows and Linux plans ([PORT-WINDOWS.md](PORT-WINDOWS.md), [PORT-LINUX.md](PORT-LINUX.md)) build on this document. It covers what is already portable, what's tied to macOS, and the groundwork both ports need first.
 
+> **Update (October 2026):** §2 items 1–4 and 7 are done: profiles and the `Controller` live in core and both shells use them, the renderer takes a `NativeSurface`, the ffmpeg recorder is the fallback `MediaSink`, and CI builds macOS and Windows. Paste-as-keystrokes in the GUI (item 5) is still to do. The table below is the v0.9 starting point.
+
 ## 1. Where things stand (v0.9)
 
 About 4,000 lines of Rust are shared. About 1,100 lines of Swift are the macOS shell.
@@ -16,7 +18,7 @@ About 4,000 lines of Rust are shared. About 1,100 lines of Swift are the macOS s
 | GPU renderer (wgpu) | `core/src/video/render.rs` | ⚠️ Rendering is portable. **Surface creation only knows AppKit** (`create_surface`). |
 | Audio out (cpal) | `core/src/video/audio.rs` | ✅ (WASAPI / ALSA / PipeWire through cpal) |
 | Recording hook | `MediaSink` trait in `core/src/video/mod.rs` | ✅ Trait. The encoder behind it is per-OS. |
-| CLI (`kvms`) | `cli/` | ✅ Builds anywhere the core does. Needs `ssh`/`scp`, and `ffmpeg` for MP4. |
+| CLI (`misterkvms-cli`) | `cli/` | ✅ Builds anywhere the core does. Needs `ssh`/`scp`, and `ffmpeg` for MP4. |
 | Window, sidebar, toolbar, settings, About | `apple/Sources/MiSTerKVMS/Views` | ❌ SwiftUI |
 | Keyboard/mouse capture, OS keycode→HID, raw mouse | `apple/.../Input` | ❌ CGEventTap, IOHID |
 | Host profiles + persistence | `apple/.../Model/HostProfile.swift` | ❌ UserDefaults (should move to core, see §2) |
@@ -81,11 +83,11 @@ A port is done when its shell covers the following, built on the core APIs:
 - **Recording**, through core's fallback or a native encoder.
 - **About window** with the same credits: MiSTer-Kun (HeWhoisRed, baxysquare), MiSTer, mrext, OBS/DistroAV, NDI® trademark and link.
 - **NDI attribution:** a link to ndi.video near the NDI source field.
-- **Packaging, signing and CI release** for the platform. Ship the `kvms` CLI too.
+- **Packaging, signing and CI release** for the platform. Ship the `misterkvms-cli` CLI too.
 
 ## 4. Order of work
 
 1. Groundwork (§2).
-2. **Linux and Windows CLI first.** `kvms` already compiles there, so it's useful on day one for core developers working on those machines. It needs only CI packaging and an NDI runtime check.
+2. **Linux and Windows CLI first.** `misterkvms-cli` already compiles there, so it's useful on day one for core developers working on those machines. It needs only CI packaging and an NDI runtime check.
 3. Windows shell ([PORT-WINDOWS.md](PORT-WINDOWS.md)). Most MiSTer users who'd run this are likely on Windows, and the OBS PC is often the same machine.
 4. Linux shell ([PORT-LINUX.md](PORT-LINUX.md)).

@@ -4,7 +4,6 @@ import SwiftUI
 
 struct SessionView: View {
     @EnvironmentObject private var controller: SessionController
-    @EnvironmentObject private var profiles: ProfileStore
     let profile: HostProfile
     let onEdit: () -> Void
     @State private var showCaptureHint = false
@@ -36,9 +35,14 @@ struct SessionView: View {
             .animation(.easeInOut(duration: 0.3), value: controller.statsVisible)
         }
         .background(.black)
+        .safeAreaInset(edge: .top, spacing: 0) {
+            if controller.someoneElseInControl, let holder = controller.stream?.holder {
+                ControlBanner(holder: holder)
+            }
+        }
         .safeAreaInset(edge: .bottom, spacing: 0) { StatusBar() }
         .navigationTitle(profile.name)
-        .navigationSubtitle(controller.coreRunning.isEmpty ? profile.misterHost : controller.coreRunning)
+        .navigationSubtitle(controller.coreRunning.isEmpty ? profile.subtitle : controller.coreRunning)
         .toolbar {
             ToolbarItemGroup {
                 Button {
@@ -58,8 +62,10 @@ struct SessionView: View {
                     Button { controller.startCapture() } label: {
                         Label("Capture", systemImage: "cursorarrow.rays")
                     }
-                    .help("Send keyboard and mouse to MiSTer (or click the screen)")
-                    .disabled(!controller.isConnected)
+                    .help(controller.someoneElseInControl
+                          ? "Someone else has control: use Take Control in the banner"
+                          : "Send keyboard and mouse to MiSTer (or click the screen)")
+                    .disabled(!controller.isConnected || controller.someoneElseInControl)
                 }
 
                 Button(action: onEdit) { Label("Edit Host", systemImage: "slider.horizontal.3") }
@@ -127,15 +133,10 @@ struct SessionView: View {
 }
 
 extension SessionView {
-    /// Apply a display change and remember scale/smooth/crop for this host.
+    /// Apply a display change (the core remembers scale, smoothing,
+    /// auto-crop and the predictive cursor for this host).
     private func setDisplay(_ change: (inout DisplaySettings) -> Void) {
         controller.updateDisplay(change)
-        guard var saved = profiles.profiles.first(where: { $0.id == profile.id }) else { return }
-        saved.scaleMode = controller.display.scaleMode.name
-        saved.smoothScaling = controller.display.smooth
-        saved.autoCrop = controller.display.autoCrop
-        saved.predictiveCursor = controller.display.predictiveCursor
-        profiles.upsert(saved)
     }
 }
 
@@ -146,19 +147,12 @@ private struct VideoPlaceholder: View {
     var body: some View {
         VStack(spacing: 8) {
             Image(systemName: "display").font(.system(size: 48)).foregroundStyle(.secondary)
-            if profile.ndiSource.isEmpty {
-                Text("No NDI source set").font(.headline)
-                Text("Edit the host and choose the OBS NDI source for this MiSTer.")
-                    .font(.caption).foregroundStyle(.secondary)
-            } else if let error = controller.videoError {
-                Text("Video unavailable").font(.headline)
-                Text(error).font(.caption).foregroundStyle(.secondary)
+            Text(title).font(.headline)
+            if let detail {
+                Text(detail).font(.caption).foregroundStyle(.secondary)
                     .multilineTextAlignment(.center).frame(maxWidth: 420)
-            } else {
-                Text(profile.ndiSource).font(.headline)
-                Text(stateText).font(.caption).foregroundStyle(.secondary)
             }
-            if controller.isConnected && !controller.capturing {
+            if controller.isConnected && !controller.capturing && !controller.someoneElseInControl {
                 Text("Click here to capture keyboard and mouse")
                     .font(.callout).padding(.top, 12)
             }
@@ -166,12 +160,68 @@ private struct VideoPlaceholder: View {
         .foregroundStyle(.white)
     }
 
-    private var stateText: String {
-        switch controller.videoStats?.state {
-        case nil, "searching": "Looking for the NDI source…"
-        case "no video": "Connected, waiting for video"
-        case let other?: other
+    private var title: String {
+        switch profile.sourceKind {
+        case "capture": profile.streamName.isEmpty ? "No stream chosen" : profile.streamName
+        case "local": "Capture card on this Mac"
+        default:
+            if profile.ndiSource.isEmpty { "No NDI source set" }
+            else if controller.videoError != nil { "Video unavailable" }
+            else { profile.ndiSource }
         }
+    }
+
+    private var detail: String? {
+        let state = controller.videoStats?.state
+        switch profile.sourceKind {
+        case "capture":
+            if profile.streamName.isEmpty { return "Edit the host and choose a MiSTerKVMS Capture stream." }
+            if let stream = controller.stream, !stream.connected, !stream.error.isEmpty { return stream.error }
+            switch state {
+            case nil, "connecting": return "Connecting to the capture server…"
+            case "no signal": return "The capture card has no picture. Is the MiSTer on?"
+            case let other?: return other
+            }
+        case "local":
+            if let error = controller.videoError { return error }
+            switch state {
+            case nil, "opening", "connecting": return "Opening the capture card…"
+            case "no video": return "The capture card has no picture. Is the MiSTer on?"
+            case let other?: return other
+            }
+        default:
+            if profile.ndiSource.isEmpty { return "Edit the host and choose the OBS NDI source for this MiSTer." }
+            if let error = controller.videoError { return error }
+            switch state {
+            case nil, "searching": return "Looking for the NDI source…"
+            case "no video": return "Connected, waiting for video"
+            case "not found":
+                if let seen = controller.videoStats?.availableSources, !seen.isEmpty {
+                    return "Not found on the network. Visible sources: \(seen.joined(separator: ", ")). Edit the host to choose one."
+                }
+                return "Not found, and no NDI sources are visible. Is OBS running with its NDI output on?"
+            case let other?: return other
+            }
+        }
+    }
+}
+
+/// Someone else controls this capture server stream.
+private struct ControlBanner: View {
+    @EnvironmentObject private var controller: SessionController
+    let holder: String
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Image(systemName: "person.2.fill").font(.title3)
+            Text("**\(holder)** has control. Taking it releases their keyboard and mouse.")
+            Spacer()
+            Button("Take Control") { controller.takeControl() }
+                .disabled(!controller.isConnected)
+        }
+        .padding(.horizontal, 12).padding(.vertical, 8)
+        .background(.blue.opacity(0.2))
+        .background(.bar)
     }
 }
 
@@ -223,13 +273,24 @@ private struct StatsOverlay: View {
                 Text("sent   \(s.messagesSent)")
                 Text("queue  \(s.queued)")
             }
+            if let st = controller.stream {
+                Text("STREAM").fontWeight(.bold).padding(.top, 4)
+                Text("server \(st.connected ? "connected" : st.error)")
+                Text("rtt    \(st.roundTripMs, format: .number.precision(.fractionLength(1))) ms")
+                Text("mister \(st.misterConnected ? st.mister : "not connected")")
+                Text("ctrl   \(st.haveControl ? "you" : st.holder.isEmpty ? "nobody" : st.holder)")
+            }
             Text("VIDEO").fontWeight(.bold).padding(.top, 4)
             if let v = controller.videoStats {
                 Text("state  \(v.state)")
                 Text("src    \(v.sourceWidth)×\(v.sourceHeight)")
                 Text("crop   \(v.cropWidth)×\(v.cropHeight)")
                 Text("fps    \(v.receivedFps, format: .number.precision(.fractionLength(1))) in / \(v.renderedFps, format: .number.precision(.fractionLength(1))) drawn")
-                Text("drop   \(v.droppedFrames) ndi / \(v.skippedFrames) skipped")
+                if controller.profile?.sourceKind == "ndi" {
+                    Text("drop   \(v.droppedFrames) ndi / \(v.skippedFrames) skipped")
+                } else {
+                    Text("drop   \(v.skippedFrames) skipped")
+                }
                 Text("age    \(ageText(v.frameAgeMs))")
                 Text("audio  \(v.audioBufferMs, format: .number.precision(.fractionLength(0))) ms buf · \(v.audioUnderruns) underruns")
                 if controller.display.predictiveCursor {
@@ -249,11 +310,12 @@ private struct StatsOverlay: View {
 }
 
 /// NDI frame age needs the OBS PC and Mac clocks to agree; a value over a
-/// second almost always means they don't.
+/// second almost always means they don't. (Capture streams correct for the
+/// clock difference.)
 private func ageText(_ ms: Double) -> String {
     if ms < 0 { return "n/a" }
     if ms > 1000 { return String(format: "clocks differ (~%.1f s)", ms / 1000) }
-    return String(format: "≈%.0f ms OBS→screen", ms)
+    return String(format: "≈%.0f ms capture→screen", ms)
 }
 
 private struct StatusBar: View {
@@ -281,6 +343,9 @@ private struct StatusBar: View {
             if !controller.gameRunning.isEmpty {
                 Text(controller.gameRunning).lineLimit(1).foregroundStyle(.secondary)
             }
+            if let control {
+                Text(control).lineLimit(1).foregroundStyle(.secondary)
+            }
             Text("F12 = MiSTer menu").foregroundStyle(.secondary)
             Text(controller.capturing ? "Capturing — Right ⌘ + Right ⌥ + Esc to release" : "Not capturing")
                 .foregroundStyle(controller.capturing ? .primary : .secondary)
@@ -288,6 +353,14 @@ private struct StatusBar: View {
         .font(.caption)
         .padding(.horizontal, 12).padding(.vertical, 6)
         .background(.bar)
+    }
+
+    /// Capture server streams: who controls the MiSTer.
+    private var control: String? {
+        guard let st = controller.stream, st.connected else { return nil }
+        if st.haveControl { return "You have control" }
+        if !st.holder.isEmpty { return "Watching · \(st.holder) has control" }
+        return "Watching · click the picture to take control"
     }
 
     private var color: Color {
@@ -338,7 +411,13 @@ struct CaptureSurface: NSViewRepresentable {
 
         override func viewDidMoveToWindow() {
             super.viewDidMoveToWindow()
-            if window != nil { controller?.attach(view: self) }
+            if window != nil {
+                controller?.attach(view: self)
+            } else {
+                // Leaving the window (no host selected): stop drawing into it
+                // before it can go away.
+                controller?.detach(view: self)
+            }
         }
 
         override func layout() {

@@ -1,87 +1,98 @@
 import Foundation
+import KVMSCore
 
-struct HostProfile: Identifiable, Codable, Hashable {
-    var id = UUID()
-    var name = "New MiSTer"
-    /// MiSTer running mrext Remote.
-    var misterHost = ""
-    var misterPort: UInt16 = 8182
-    /// OBS PC sending NDI (optional: NDI discovery usually finds it by name).
-    var obsHost = ""
-    /// NDI source name as discovered, e.g. "OBSPC (MiSTer-1)".
-    var ndiSource = ""
-    var mouseSensitivity = 1.0
-    /// Alt/Option + click → middle click.
-    var altClickIsMiddle = true
-    /// Send the mouse's raw movement, so only the vintage OS accelerates it.
-    var rawMouse = false
-    /// "fit", "integer" or "native" (see ScaleMode in the core).
-    var scaleMode = "fit"
-    var smoothScaling = false
-    var autoCrop = true
-    /// Draw a local cursor ahead of the guest's lagging one.
-    var predictiveCursor = true
-    /// What the predictive cursor learned last time (0 = not yet).
-    var cursorLagMs = 0.0
-    var cursorGain = 0.0
+// HostProfile is the core's record (core/src/profiles.rs); hosts are saved by
+// the core in ~/Library/Application Support/MiSTerKVMS/profiles.json.
+extension HostProfile: Identifiable {}
 
-    init() {}
-
-    // Decode field by field so profiles saved by older versions keep working
-    // when fields are added.
-    init(from decoder: Decoder) throws {
-        let c = try decoder.container(keyedBy: CodingKeys.self)
-        let d = HostProfile()
-        id = try c.decodeIfPresent(UUID.self, forKey: .id) ?? d.id
-        name = try c.decodeIfPresent(String.self, forKey: .name) ?? d.name
-        misterHost = try c.decodeIfPresent(String.self, forKey: .misterHost) ?? d.misterHost
-        misterPort = try c.decodeIfPresent(UInt16.self, forKey: .misterPort) ?? d.misterPort
-        obsHost = try c.decodeIfPresent(String.self, forKey: .obsHost) ?? d.obsHost
-        ndiSource = try c.decodeIfPresent(String.self, forKey: .ndiSource) ?? d.ndiSource
-        mouseSensitivity = try c.decodeIfPresent(Double.self, forKey: .mouseSensitivity) ?? d.mouseSensitivity
-        altClickIsMiddle = try c.decodeIfPresent(Bool.self, forKey: .altClickIsMiddle) ?? d.altClickIsMiddle
-        rawMouse = try c.decodeIfPresent(Bool.self, forKey: .rawMouse) ?? d.rawMouse
-        scaleMode = try c.decodeIfPresent(String.self, forKey: .scaleMode) ?? d.scaleMode
-        smoothScaling = try c.decodeIfPresent(Bool.self, forKey: .smoothScaling) ?? d.smoothScaling
-        autoCrop = try c.decodeIfPresent(Bool.self, forKey: .autoCrop) ?? d.autoCrop
-        predictiveCursor = try c.decodeIfPresent(Bool.self, forKey: .predictiveCursor) ?? d.predictiveCursor
-        cursorLagMs = try c.decodeIfPresent(Double.self, forKey: .cursorLagMs) ?? d.cursorLagMs
-        cursorGain = try c.decodeIfPresent(Double.self, forKey: .cursorGain) ?? d.cursorGain
-    }
+extension HostProfile {
+    /// A new host with default settings and a fresh id.
+    static func make() -> HostProfile { newHostProfile() }
 }
 
+/// The saved hosts, as the core has them. Changes go through the core, which
+/// reports back with a `profilesChanged` event (see SessionController).
 @MainActor
 final class ProfileStore: ObservableObject {
-    @Published var profiles: [HostProfile] {
-        didSet { save() }
+    @Published private(set) var profiles: [HostProfile] = []
+    private let core: Controller
+
+    init(core: Controller) {
+        self.core = core
+        importLegacyDefaults()
+        reload()
     }
 
-    private static let key = "hostProfiles"
-
-    init() {
-        if let data = UserDefaults.standard.data(forKey: Self.key),
-           let saved = try? JSONDecoder().decode([HostProfile].self, from: data) {
-            profiles = saved
-        } else {
-            profiles = []
-        }
+    func reload() {
+        profiles = core.profiles()
     }
 
+    /// Add or replace (by id). If it's the open host, the core reconnects.
     func upsert(_ profile: HostProfile) {
-        if let i = profiles.firstIndex(where: { $0.id == profile.id }) {
-            profiles[i] = profile
-        } else {
-            profiles.append(profile)
-        }
+        core.saveProfile(profile: profile)
     }
 
     func delete(_ id: HostProfile.ID) {
-        profiles.removeAll { $0.id == id }
+        core.deleteProfile(id: id)
     }
 
-    private func save() {
-        if let data = try? JSONEncoder().encode(profiles) {
-            UserDefaults.standard.set(data, forKey: Self.key)
+    /// Versions before the shared settings file kept hosts in UserDefaults.
+    /// Move them over once; the old data is left in place as a backup.
+    private func importLegacyDefaults() {
+        guard !core.legacyImported() else { return }
+        let defaults = UserDefaults.standard
+        if let data = defaults.data(forKey: "hostProfiles"), let json = String(data: data, encoding: .utf8) {
+            do {
+                let count = try core.importProfiles(json: json)
+                FileHandle.standardError.write("profiles: imported \(count) from UserDefaults\n".data(using: .utf8)!)
+            } catch {
+                FileHandle.standardError.write("profiles: UserDefaults import failed: \(error)\n".data(using: .utf8)!)
+            }
         }
+        if defaults.bool(forKey: "statsPinned") {
+            core.setStatsPinned(pinned: true)
+        }
+        core.markLegacyImported()
+    }
+}
+
+extension HostProfile {
+    /// Where video comes from: "capture" (a capture server stream), "local"
+    /// (a card on this Mac) or "ndi". An empty `source` is inferred from
+    /// which field is filled, as the core does.
+    var sourceKind: String {
+        switch source {
+        case "capture", "local", "ndi": source
+        default:
+            if !stream.trimmingCharacters(in: .whitespaces).isEmpty { "capture" }
+            else if !localVideo.isEmpty { "local" }
+            else { "ndi" }
+        }
+    }
+
+    /// The stream's name, from its address (`mkvm://pc/name`).
+    var streamName: String {
+        var path = Substring(stream)
+        if let scheme = path.range(of: "://") { path = path[scheme.upperBound...] }
+        guard let slash = path.firstIndex(of: "/") else { return "" }
+        let name = path[path.index(after: slash)...].trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        return name.removingPercentEncoding ?? name
+    }
+
+    /// The host list's second line.
+    var subtitle: String {
+        switch sourceKind {
+        case "capture": streamName.isEmpty ? "No stream chosen" : "Stream \(streamName)"
+        case "local": "Capture card on this Mac"
+        default: misterHost.isEmpty ? "No address" : misterHost
+        }
+    }
+}
+
+extension ControllerState {
+    /// A capture server stream that someone else controls.
+    var someoneElseInControl: Bool {
+        guard let stream else { return false }
+        return !stream.haveControl && !stream.holder.isEmpty
     }
 }
