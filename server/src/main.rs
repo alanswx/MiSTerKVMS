@@ -8,6 +8,7 @@ mod net;
 mod service;
 mod setup;
 mod stream;
+mod update;
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -74,7 +75,7 @@ pub fn now_100ns() -> i64 {
 }
 
 pub fn server_name() -> String {
-    format!("misterkvms-capture {}", env!("CARGO_PKG_VERSION"))
+    format!("misterkvms-capture {}", update::version())
 }
 
 /// The running server: settings and streams. Streams are restarted when the
@@ -189,9 +190,18 @@ pub fn serve(dir: PathBuf, as_service: bool) -> Result<(), String> {
     let settings = config::load_settings(&dir);
     let page = format!("http://localhost:{}", settings.setup_port);
     let explorer = !as_service && service::started_from_explorer();
-    if !as_service && already_running(settings.setup_port) {
+    if let Some(running) = (!as_service).then(|| already_running(settings.setup_port)).flatten() {
         // Another copy, or the service: show its page instead of failing.
-        println!("misterkvms-capture is already running: {page}");
+        println!("misterkvms-capture {running} is already running: {page}");
+        // A newer download double-clicked while an older service runs:
+        // update the service from this copy (Windows asks first).
+        if explorer && service::status().installed && update::newer(update::version(), &running) {
+            println!("updating the service from {running} to {}...", update::version());
+            match service::request(&dir, service::Action::Install) {
+                Ok(()) => println!("updated"),
+                Err(e) => println!("not updated: {e}"),
+            }
+        }
         if explorer {
             service::open_browser(&page);
         }
@@ -236,18 +246,21 @@ fn retry(until: Instant, mut f: impl FnMut() -> Result<(), String>) -> Result<()
     }
 }
 
-/// Is a misterkvms-capture setup page answering on this PC?
-fn already_running(setup_port: u16) -> bool {
+/// Is a misterkvms-capture setup page answering on this PC? Its version if so.
+fn already_running(setup_port: u16) -> Option<String> {
     use std::io::{Read, Write};
     let addr = std::net::SocketAddr::from(([127, 0, 0, 1], setup_port));
-    let Ok(mut sock) = std::net::TcpStream::connect_timeout(&addr, Duration::from_millis(500)) else { return false };
+    let Ok(mut sock) = std::net::TcpStream::connect_timeout(&addr, Duration::from_millis(500)) else { return None };
     let _ = sock.set_read_timeout(Some(Duration::from_secs(2)));
     if sock.write_all(b"GET /api/state HTTP/1.0\r\nHost: localhost\r\n\r\n").is_err() {
-        return false;
+        return None;
     }
     let mut body = Vec::new();
     let _ = sock.take(1 << 16).read_to_end(&mut body);
-    String::from_utf8_lossy(&body).contains("misterkvms-capture")
+    // "server":"misterkvms-capture 0.9.4"
+    let text = String::from_utf8_lossy(&body);
+    let at = text.find("misterkvms-capture ")? + "misterkvms-capture ".len();
+    Some(text[at..].chars().take_while(|c| c.is_ascii_alphanumeric() || *c == '.').collect())
 }
 
 fn devices() -> Result<(), String> {

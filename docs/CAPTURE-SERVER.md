@@ -207,6 +207,14 @@ One TCP connection per viewer per stream, `TCP_NODELAY`. No TLS on the LAN.
   the service runs it from there, so the download can go. Double-clicking a
   newer download and pressing Start (or Install) replaces the installed copy.
   Uninstall removes it; the config folder stays.
+- **Updates:** each release also carries the capture server on its own
+  (`misterkvms-capture-<version>-win-x64.exe`; CI stamps the version into
+  the build through `MISTERKVMS_VERSION`). *Check for updates* on the page
+  asks GitHub for the latest release; *Update* (service only) downloads the
+  exe into the Program Files folder (only administrators can write there),
+  checks it against the SHA-256 GitHub lists for the asset, and reinstalls
+  the service from it, no prompt needed. Double-clicking a newer download
+  while an older service runs updates the service from it (one UAC prompt).
 
 ### 5.4 Setup page and tray
 

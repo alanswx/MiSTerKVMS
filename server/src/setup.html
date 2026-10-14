@@ -120,6 +120,11 @@
         <button id="svcStop" hidden>Stop</button>
         <button class="danger" id="svcUninstall" hidden>Uninstall</button>
       </div>
+      <div class="actions">
+        <button id="updCheck">Check for updates</button>
+        <button class="primary" id="updApply" hidden>Update</button>
+      </div>
+      <span class="hint" id="updNote"></span>
     </div>
   </section>
 
@@ -491,6 +496,7 @@ function renderService() {
   show("svcRestart", s.thisIsService);
   show("svcStop", s.thisIsService);
   show("svcUninstall", s.installed);
+  $("updCheck").disabled = !!svcBusy;
   $("allowLan").disabled = !s.local;
   if (!s.local) $("allowLanHint").textContent = "This can only be changed on the capture PC itself.";
 }
@@ -544,6 +550,49 @@ $("svcStart").onclick = () => serviceAction("install", "Starting the service… 
 $("svcRestart").onclick = () => serviceAction("restart", "Restarting…");
 $("svcStop").onclick = () => serviceAction("stop", "Stopping…");
 $("svcUninstall").onclick = () => serviceAction("uninstall", "Removing the service…");
+
+// Updates from the GitHub releases.
+let update = null;
+$("updCheck").onclick = async () => {
+  $("updNote").textContent = "Checking…";
+  $("updApply").hidden = true;
+  try {
+    const r = await fetch("/api/update");
+    update = await r.json();
+    if (!r.ok) throw new Error(update.error || r.statusText);
+    const notes = update.page ? ` <a href="${esc(update.page)}" target="_blank" rel="noopener">What's new</a>` : "";
+    if (!update.newer) {
+      $("updNote").innerHTML = `Up to date (${esc(update.current)}).`;
+    } else if (update.canApply && service && service.local) {
+      $("updApply").hidden = false;
+      $("updApply").textContent = `Update to ${update.latest}`;
+      $("updNote").innerHTML = `${esc(update.latest)} is out; this is ${esc(update.current)}.${notes}`;
+    } else {
+      $("updNote").innerHTML = `${esc(update.latest)} is out; this is ${esc(update.current)}. Download it from the release page and double-click it: it updates the service.${notes}`;
+    }
+  } catch (e) { $("updNote").textContent = "Can't check: " + e.message; }
+};
+$("updApply").onclick = async () => {
+  if (!confirm(`Update to ${update.latest}? Streams stop for a few seconds; viewers reconnect.`)) return;
+  svcBusy = `Downloading and installing ${update.latest}…`; renderService();
+  $("updApply").hidden = true;
+  try {
+    const r = await api("/api/update", {});
+    // The service restarts on the new version: wait for it.
+    let ok = false;
+    for (let i = 0; i < 90 && !ok; i++) {
+      await new Promise(res => setTimeout(res, 1000));
+      try { const st = await fetch("/api/state").then(r => r.json()); ok = st.server.endsWith(" " + r.version); } catch {}
+    }
+    svcBusy = "";
+    $("updNote").textContent = ok ? `Updated to ${r.version}.` : "The update didn't come back: see capture.log in the config folder.";
+    if (ok) { await loadState(); await loadService(); toast(`Updated to ${r.version}`); }
+  } catch (e) {
+    svcBusy = "";
+    $("updNote").textContent = e.message === "cancelled" ? "" : e.message;
+  }
+  renderService();
+};
 
 (async () => {
   try { await loadState(); await loadDevices(); await loadService(); }

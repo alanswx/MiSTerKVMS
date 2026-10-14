@@ -22,6 +22,8 @@ $Platform = if ($Arch -eq "arm64") { "ARM64" } else { "x64" }
 $Project = "windows\MiSTerKVMS\MiSTerKVMS.csproj"
 
 Write-Host "==> Rust core $Version ($Triple)"
+# The capture server reports this version and compares it with releases.
+$env:MISTERKVMS_VERSION = $Version
 cargo build --release --target $Triple -p kvms-core -p kvms-cli -p misterkvms-capture
 if ($LASTEXITCODE) { exit $LASTEXITCODE }
 
@@ -35,6 +37,8 @@ if ($Package) {
     Copy-Item LICENSE "$Out\LICENSE.txt"
     # The capture server, for the PC with the capture cards.
     Copy-Item "target\$Triple\release\misterkvms-capture.exe" "$Out\misterkvms-capture.exe"
+    # Also on its own: what the setup page's "Update" downloads.
+    Copy-Item "target\$Triple\release\misterkvms-capture.exe" "build\misterkvms-capture-$Version-win-$Arch.exe"
     $Zip = "$Out.zip"
     if (Test-Path $Zip) { Remove-Item $Zip }
     Compress-Archive -Path "$Out\*" -DestinationPath $Zip

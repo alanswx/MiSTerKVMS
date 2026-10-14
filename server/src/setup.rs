@@ -18,7 +18,7 @@ use tiny_http::{Header, Method, Request, Response, StatusCode};
 
 use crate::config::{self, Settings, Streams};
 use crate::stream::{AudioPacket, Encoded, Subscriber, Want, PREVIEW_IDS};
-use crate::{log, service, Server};
+use crate::{log, service, update, Server};
 
 const PAGE: &str = include_str!("setup.html");
 /// Previews are for checking a card works, not for watching: keep them light.
@@ -84,6 +84,25 @@ fn handle(server: Arc<Server>, mut request: Request) {
         (Method::Get, "/") => Response::from_string(PAGE).with_header(header("Content-Type", "text/html; charset=utf-8")),
         (Method::Get, "/api/state") => json_response(state(&server)),
         (Method::Get, "/api/devices") => json_response(devices()),
+        (Method::Get, "/api/update") => match update::latest() {
+            Ok(l) => json_response(json!(l)),
+            Err(e) => error(502, &e),
+        },
+        (Method::Post, "/api/update") => {
+            if !authorised {
+                error(403, "wrong password")
+            } else if !is_local(peer) {
+                error(403, "updates can only be started on the capture PC itself")
+            } else {
+                match update::apply(server.dir()) {
+                    Ok(v) => json_response(json!({ "ok": true, "version": v })),
+                    Err(e) => {
+                        log(&format!("update: {e}"));
+                        error(500, &e)
+                    }
+                }
+            }
+        }
         (Method::Get, "/api/service") => json_response(json!({ "service": service::status(), "local": is_local(peer) })),
         (Method::Post, "/api/service") => {
             if !authorised {

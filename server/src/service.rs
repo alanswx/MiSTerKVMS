@@ -86,6 +86,12 @@ mod other {
         false
     }
     pub fn no_throttling() {}
+    pub fn update_download_path() -> Option<PathBuf> {
+        None
+    }
+    pub fn install_from(_exe: &Path, _dir: &Path) -> Result<(), String> {
+        Err("updates from the page are Windows-only for now".into())
+    }
     pub fn open_browser(_url: &str) {}
 }
 
@@ -186,6 +192,7 @@ mod win {
     fn service_main(_args: Vec<OsString>) {
         let dir = SERVICE_DIR.get().cloned().unwrap_or_else(config::dir);
         log_to_file(&dir);
+        clean_up_update();
         let (stop_tx, stop_rx) = mpsc::channel();
         let handler = move |control| match control {
             ServiceControl::Stop | ServiceControl::Shutdown => {
@@ -509,6 +516,39 @@ mod win {
     fn firewall_remove(_dir: &Path) {
         for (what, _) in RULES {
             let _ = netsh(&["delete".into(), "rule".into(), format!("name={}", rule_name(what))]);
+        }
+    }
+
+    /// Where the service downloads an update: next to the installed
+    /// program, where only administrators can write.
+    pub fn update_download_path() -> Option<PathBuf> {
+        Some(installed_exe().with_file_name("misterkvms-capture.new.exe"))
+    }
+
+    /// Reinstall the service from `exe` (an update): a helper running it
+    /// stops this service, copies itself into place and starts it again.
+    pub fn install_from(exe: &Path, dir: &Path) -> Result<(), String> {
+        std::process::Command::new(exe)
+            .args(["service", "install", "--config"])
+            .arg(dir)
+            .creation_flags(DETACHED_PROCESS | CREATE_NO_WINDOW)
+            .spawn()
+            .map(|_| ())
+            .map_err(|e| format!("can't start the update: {e}"))
+    }
+
+    /// After an update: delete the downloaded copy once its helper is done.
+    fn clean_up_update() {
+        let Some(path) = update_download_path() else { return };
+        if path.exists() {
+            std::thread::spawn(move || {
+                for _ in 0..30 {
+                    std::thread::sleep(Duration::from_secs(2));
+                    if std::fs::remove_file(&path).is_ok() || !path.exists() {
+                        return;
+                    }
+                }
+            });
         }
     }
 
