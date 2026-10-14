@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build the Linux app (GTK 4 + libadwaita) and the kvms CLI, and package
+# Build the Linux app (GTK 4 + libadwaita) and the misterkvms-cli CLI, and package
 # them as build/MiSTerKVMS-<version>-linux-<arch>.tar.gz.
 # Usage: scripts/build-linux.sh [--run]
 #
@@ -22,7 +22,8 @@ NAME="MiSTerKVMS-$VERSION-linux-$ARCH"
 OUT="build/$NAME"
 rm -rf "$OUT"
 mkdir -p "$OUT"
-cp "$TARGET_DIR/release/misterkvms" "$TARGET_DIR/release/kvms" "$OUT/"
+cp "$TARGET_DIR/release/misterkvms" "$TARGET_DIR/release/misterkvms-cli" "$OUT/"
+ln -sf misterkvms-cli "$OUT/kvms" # old name, kept for one release
 cp -r linux/data/icons "$OUT/icons"
 cp linux/data/io.github.misterkvms.MiSTerKVMS.desktop "$OUT/"
 cp LICENSE "$OUT/LICENSE.txt"
@@ -32,7 +33,8 @@ cat > "$OUT/install.sh" <<'INSTALL'
 set -e
 HERE=$(cd "$(dirname "$0")" && pwd)
 mkdir -p ~/.local/bin ~/.local/share/applications ~/.local/share/icons
-cp "$HERE/misterkvms" "$HERE/kvms" ~/.local/bin/
+cp "$HERE/misterkvms" "$HERE/misterkvms-cli" ~/.local/bin/
+ln -sf misterkvms-cli ~/.local/bin/kvms
 cp -r "$HERE/icons/hicolor" ~/.local/share/icons/
 cp "$HERE/io.github.misterkvms.MiSTerKVMS.desktop" ~/.local/share/applications/
 echo "Installed. Start MiSTerKVMS from the app menu, or run: misterkvms"

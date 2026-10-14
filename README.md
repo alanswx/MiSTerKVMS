@@ -72,33 +72,33 @@ The tools in `core/examples` (connection probe, NDI probe, latency and predictiv
 - **⌥-click** (Windows: **Alt-click**) sends a middle click (configurable per host).
 - Windows never lets an app capture **Ctrl+Alt+Del** or **Win+L**: use **Send Ctrl+Alt+Del** in the toolbar's **…** menu.
 
-## Command-line tool (`kvms`)
+## Command-line tool (`misterkvms-cli`)
 
-`kvms` drives a MiSTer from scripts, for testing and debugging cores: screenshots, recordings, typing, key combos, mouse, and loading a freshly built core. It ships inside the app (on Windows, `kvms.exe` next to `MiSTerKVMS.exe`); on macOS, to put it on your PATH:
+`misterkvms-cli` (formerly `kvms`, which still works for this release) drives a MiSTer from scripts, for testing and debugging cores: screenshots, recordings, typing, key combos, mouse, and loading a freshly built core. It ships inside the app (on Windows, `misterkvms-cli.exe` next to `MiSTerKVMS.exe`); on macOS, to put it on your PATH:
 
 ```bash
-sudo ln -sf /Applications/MiSTerKVMS.app/Contents/MacOS/kvms /usr/local/bin/kvms
+sudo ln -sf /Applications/MiSTerKVMS.app/Contents/MacOS/misterkvms-cli /usr/local/bin/misterkvms-cli
 ```
 
 It reads the MiSTer address and NDI source from `local.settings.json` (searched from the current folder upwards; or `--settings`, `--mister`, `--ndi`). Every command prints one line of JSON.
 
 | Command | What it does |
 |---|---|
-| `kvms status` | Core/game running, mrext and NDI reachable |
-| `kvms screenshot out.png` | Current picture from the capture, borders cropped (`--full` keeps them) |
-| `kvms screenshot --native out.png` | MiSTer's own screenshot: the core's native resolution, pixel-exact (also saved on the MiSTer) |
-| `kvms record 10s out.mp4` | Video + audio (needs `ffmpeg`); `out.wav` for audio only |
-| `kvms frames 5s dir/` | Every changed frame as PNG (`--all` keeps repeats) |
-| `kvms type 'LOAD "*",8,1\n'` | Type text (US layout); `--delay` / `--hold` in ms for slow machines |
-| `kvms key ctrl+alt+del` | Key or combo; `kvms key menu` opens the MiSTer menu (F12) |
-| `kvms mouse move 10 -5` / `kvms mouse click right` | Mouse |
-| `kvms wait-for-change --timeout 30s` | Block until the screen changes; `--until-still 2s` waits until it settles |
-| `kvms load-core build/MyCore.rbf` | Copy over SSH to `/media/fat/_Development` and load it |
-| `kvms sources` | List NDI sources |
+| `misterkvms-cli status` | Core/game running, mrext and NDI reachable |
+| `misterkvms-cli screenshot out.png` | Current picture from the capture, borders cropped (`--full` keeps them) |
+| `misterkvms-cli screenshot --native out.png` | MiSTer's own screenshot: the core's native resolution, pixel-exact (also saved on the MiSTer) |
+| `misterkvms-cli record 10s out.mp4` | Video + audio (needs `ffmpeg`); `out.wav` for audio only |
+| `misterkvms-cli frames 5s dir/` | Every changed frame as PNG (`--all` keeps repeats) |
+| `misterkvms-cli type 'LOAD "*",8,1\n'` | Type text (US layout); `--delay` / `--hold` in ms for slow machines |
+| `misterkvms-cli key ctrl+alt+del` | Key or combo; `misterkvms-cli key menu` opens the MiSTer menu (F12) |
+| `misterkvms-cli mouse move 10 -5` / `misterkvms-cli mouse click right` | Mouse |
+| `misterkvms-cli wait-for-change --timeout 30s` | Block until the screen changes; `--until-still 2s` waits until it settles |
+| `misterkvms-cli load-core build/MyCore.rbf` | Copy over SSH to `/media/fat/_Development` and load it |
+| `misterkvms-cli sources` | List NDI sources |
 
-A typical test loop: `kvms load-core out.rbf && kvms wait-for-change --until-still 3s --timeout 60s && kvms type 'dir\n' && kvms screenshot --native result.png`.
+A typical test loop: `misterkvms-cli load-core out.rbf && misterkvms-cli wait-for-change --until-still 3s --timeout 60s && misterkvms-cli type 'dir\n' && misterkvms-cli screenshot --native result.png`.
 
-Several MiSTers can be named under `machines` and picked with `--host` (or `-H`); `default` is used when you don't pass one, and `kvms machines` lists them:
+Several MiSTers can be named under `machines` and picked with `--host` (or `-H`); `default` is used when you don't pass one, and `misterkvms-cli machines` lists them:
 
 ```json
 {
@@ -111,7 +111,7 @@ Several MiSTers can be named under `machines` and picked with `--host` (or `-H`)
 }
 ```
 
-`kvms --host mister2 screenshot shot.png`. A machine's entries override the top-level ones. Other optional settings (top level or per machine): `obs_host` (IP or name; the OBS PC is then asked directly, for networks where discovery can't find it), `ssh_user` (default `root`), `core_dest`, `type_delay_ms`, `type_hold_ms`. See `local.settings.example.json`.
+`misterkvms-cli --host mister2 screenshot shot.png`. A machine's entries override the top-level ones. Other optional settings (top level or per machine): `obs_host` (IP or name; the OBS PC is then asked directly, for networks where discovery can't find it), `ssh_user` (default `root`), `core_dest`, `type_delay_ms`, `type_hold_ms`. See `local.settings.example.json`.
 
 ## Releases
 

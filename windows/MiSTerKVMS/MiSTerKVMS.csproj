@@ -28,6 +28,8 @@
   <ItemGroup>
     <Content Include="Assets\**" CopyToOutputDirectory="PreserveNewest" />
     <None Include="$(KvmsCoreDir)kvms_core.dll" Link="kvms_core.dll" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="$(KvmsCoreDir)misterkvms-cli.exe" Link="misterkvms-cli.exe" CopyToOutputDirectory="PreserveNewest" Condition="Exists('$(KvmsCoreDir)misterkvms-cli.exe')" />
+    <!-- The CLI's old name, kept for one release. -->
     <None Include="$(KvmsCoreDir)kvms.exe" Link="kvms.exe" CopyToOutputDirectory="PreserveNewest" Condition="Exists('$(KvmsCoreDir)kvms.exe')" />
   </ItemGroup>
   <Target Name="CheckKvmsCore" BeforeTargets="Build">

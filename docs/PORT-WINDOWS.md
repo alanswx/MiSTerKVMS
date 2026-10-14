@@ -84,7 +84,7 @@ UIPI note: the hook doesn't see input when an elevated window has focus. That's 
 - **About:** WinUI `ContentDialog` or page with the same credits.
 - **App icon:** `make_icon.py` also writes an `.ico` (16, 24, 32, 48, 64, 256), using Pillow or `magick`.
 - **Theme:** follow the system light/dark theme. Mica backdrop.
-- **CLI:** `kvms.exe` built by the same CI. Uses Windows' built-in OpenSSH `ssh`/`scp` for `load-core`. `ffmpeg` is optional, for MP4.
+- **CLI:** `misterkvms-cli.exe` built by the same CI. Uses Windows' built-in OpenSSH `ssh`/`scp` for `load-core`. `ffmpeg` is optional, for MP4.
 
 ## 6. Packaging, signing, distribution
 
@@ -104,7 +104,7 @@ UIPI note: the hook doesn't see input when an elevated window has focus. That's 
 | # | Milestone | Done when |
 |---|---|---|
 | W0 | Groundwork (PORTING §2) merged | macOS app runs on the core controller and profiles |
-| W1 | `kvms.exe` in releases | CLI works against a MiSTer from Windows |
+| W1 | `misterkvms-cli.exe` in releases | CLI works against a MiSTer from Windows |
 | W2 | Bindings spike | C# console app drives `MisterSession` through uniffi-bindgen-cs (or the C ABI fallback) |
 | W3 | Video spike | Child HWND (or SwapChainPanel) shows the NDI stream through wgpu D3D12, with resize/DPI |
 | W4 | Input spike | Hook + Raw Input + ClipCursor capture; exit chord incl. AltGr handling; keys verified on HP9K715 and a DOS core |

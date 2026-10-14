@@ -1,7 +1,7 @@
-//! kvms: drive a MiSTer from the command line. Screenshots, recording,
-//! keyboard/mouse and core loading, for testing and debugging cores.
-//! Every command prints one JSON object on stdout (errors: JSON on stderr,
-//! exit code 1), so it's easy to script.
+// misterkvms-cli: drive a MiSTer from the command line. Screenshots, recording,
+// keyboard/mouse and core loading, for testing and debugging cores.
+// Every command prints one JSON object on stdout (errors: JSON on stderr,
+// exit code 1), so it's easy to script.
 
 mod media;
 mod settings;
@@ -19,7 +19,7 @@ use media::{Item, Source};
 use settings::Settings;
 
 #[derive(Parser)]
-#[command(name = "kvms", version, about = "Drive a MiSTer from the command line: screenshots, recording, input, cores.")]
+#[command(name = "misterkvms-cli", version, about = "Drive a MiSTer from the command line: screenshots, recording, input, cores.")]
 struct Cli {
     /// Settings file (default: local.settings.json in this or a parent folder).
     #[arg(long, global = true)]
@@ -143,6 +143,7 @@ enum MouseCmd {
 }
 
 fn main() {
+    warn_old_name();
     let cli = Cli::parse();
     match run(cli) {
         Ok(v) => println!("{v}"),
@@ -150,6 +151,17 @@ fn main() {
             eprintln!("{}", json!({ "error": e }));
             std::process::exit(1);
         }
+    }
+}
+
+/// Run as `kvms` (the old name): say so, but only to a person at a terminal,
+/// so scripts reading stderr still get JSON only.
+fn warn_old_name() {
+    use std::io::IsTerminal;
+    let invoked = std::env::args_os().next().map(PathBuf::from);
+    let stem = invoked.as_deref().and_then(Path::file_stem).and_then(|s| s.to_str());
+    if stem == Some("kvms") && std::io::stderr().is_terminal() {
+        eprintln!("note: `kvms` is now `misterkvms-cli`; the old name goes away in the next release.");
     }
 }
 
