@@ -28,7 +28,11 @@ impl Discovery {
                 ("protocol", "1"),
                 ("server", host.as_str()),
             ];
-            let info = ServiceInfo::new(mkvm::SERVICE_TYPE, &instance_name(name), &format!("{host}.local."), "", port, &props[..])
+            // Our own host record, not the computer's: the OS's responder
+            // (mDNSResponder, Windows' mDNS) owns `<host>.local` and renames
+            // the computer when someone else claims it. Viewers use the
+            // addresses, not this name.
+            let info = ServiceInfo::new(mkvm::SERVICE_TYPE, &instance_name(name), &format!("{host}-mkvm.local."), "", port, &props[..])
                 .map(|i| i.enable_addr_auto());
             match info {
                 Ok(info) => {
