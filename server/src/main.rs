@@ -5,11 +5,13 @@
 mod config;
 mod discovery;
 mod net;
+mod service;
 mod setup;
 mod stream;
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use clap::{Parser, Subcommand};
 
@@ -29,7 +31,16 @@ struct Cli {
 #[derive(Subcommand)]
 enum Cmd {
     /// Run the server (the default).
-    Serve,
+    Serve {
+        /// Started by the Windows Service Control Manager.
+        #[arg(long, hide = true)]
+        service: bool,
+    },
+    /// Run in the background at boot: install|uninstall|start|stop|restart|status (Windows).
+    Service {
+        #[arg(value_enum)]
+        action: service::Action,
+    },
     /// List capture cards, their formats, and audio inputs (JSON).
     Devices,
     /// Show the configured streams (JSON).
@@ -135,8 +146,10 @@ impl Server {
 fn main() {
     let cli = Cli::parse();
     let dir = cli.config.unwrap_or_else(config::dir);
-    let result = match cli.cmd.unwrap_or(Cmd::Serve) {
-        Cmd::Serve => serve(dir),
+    let result = match cli.cmd.unwrap_or(Cmd::Serve { service: false }) {
+        Cmd::Serve { service: true } => service::run(dir),
+        Cmd::Serve { service: false } => serve(dir, false),
+        Cmd::Service { action } => service::cli(&dir, action),
         Cmd::Devices => devices(),
         Cmd::List => {
             println!("{}", serde_json::to_string_pretty(&config::load_streams(&dir)).unwrap());
@@ -166,25 +179,71 @@ fn main() {
     }
 }
 
-fn serve(dir: PathBuf) -> Result<(), String> {
+/// Run the server until the process ends. `as_service`: started by the
+/// Windows service; the ports may still be held for a moment by the copy
+/// that just handed over to it.
+pub fn serve(dir: PathBuf, as_service: bool) -> Result<(), String> {
     let settings = config::load_settings(&dir);
+    let page = format!("http://localhost:{}", settings.setup_port);
+    let explorer = !as_service && service::started_from_explorer();
+    if !as_service && already_running(settings.setup_port) {
+        // Another copy, or the service: show its page instead of failing.
+        println!("misterkvms-capture is already running: {page}");
+        if explorer {
+            service::open_browser(&page);
+        }
+        return Ok(());
+    }
     log(&format!("{} (config {})", server_name(), dir.display()));
+    service::no_throttling();
     let server = Arc::new(Server {
         dir: dir.clone(),
         settings: Mutex::new(settings.clone()),
         streams: Mutex::new(Vec::new()),
         discovery: Mutex::new(discovery::Discovery::start().map_err(|e| log(&format!("mDNS: {e}"))).ok()),
     });
-    net::listen(server.clone(), settings.port).map_err(|e| format!("can't listen on TCP {}: {e}", settings.port))?;
-    setup::start(server.clone(), &settings).map_err(|e| format!("can't start the setup page on TCP {}: {e}", settings.setup_port))?;
+    let patience = Instant::now() + Duration::from_secs(if as_service { 45 } else { 0 });
+    retry(patience, || net::listen(server.clone(), settings.port).map_err(|e| format!("can't listen on TCP {}: {e}", settings.port)))?;
+    retry(patience, || setup::start(server.clone(), &settings).map_err(|e| format!("can't start the setup page on TCP {}: {e}", settings.setup_port)))?;
     let streams = config::load_streams(&dir);
     if streams.streams.is_empty() {
-        log(&format!("no streams yet: open http://localhost:{} to add one", settings.setup_port));
+        log(&format!("no streams yet: open {page} to add one"));
     }
     server.apply(&streams);
+    if explorer {
+        log("keep this window open, or turn on \"Run in the background\" on the setup page");
+        service::open_browser(&page);
+    }
     loop {
         std::thread::park();
     }
+}
+
+fn retry(until: Instant, mut f: impl FnMut() -> Result<(), String>) -> Result<(), String> {
+    loop {
+        match f() {
+            Ok(()) => return Ok(()),
+            Err(e) if Instant::now() < until => {
+                log(&format!("{e}; trying again"));
+                std::thread::sleep(Duration::from_secs(1));
+            }
+            Err(e) => return Err(e),
+        }
+    }
+}
+
+/// Is a misterkvms-capture setup page answering on this PC?
+fn already_running(setup_port: u16) -> bool {
+    use std::io::{Read, Write};
+    let addr = std::net::SocketAddr::from(([127, 0, 0, 1], setup_port));
+    let Ok(mut sock) = std::net::TcpStream::connect_timeout(&addr, Duration::from_millis(500)) else { return false };
+    let _ = sock.set_read_timeout(Some(Duration::from_secs(2)));
+    if sock.write_all(b"GET /api/state HTTP/1.0\r\nHost: localhost\r\n\r\n").is_err() {
+        return false;
+    }
+    let mut body = Vec::new();
+    let _ = sock.take(1 << 16).read_to_end(&mut body);
+    String::from_utf8_lossy(&body).contains("misterkvms-capture")
 }
 
 fn devices() -> Result<(), String> {

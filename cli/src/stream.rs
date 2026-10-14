@@ -57,6 +57,8 @@ pub fn watch(address: &str, duration: Duration, max: Option<(u32, u32)>, save: O
 
     let start = Instant::now();
     let (mut frames, mut bytes, mut audio_samples, mut gaps) = (0u64, 0u64, 0u64, 0u64);
+    // Loudest sample (0–32767): 0 means silence, e.g. Windows blocking the microphone.
+    let mut audio_peak = 0i32;
     let mut size = (0u32, 0u32);
     let mut last_jpeg = Vec::new();
     let mut ages = Vec::new();
@@ -84,7 +86,10 @@ pub fn watch(address: &str, duration: Duration, max: Option<(u32, u32)>, save: O
                 }
                 last_jpeg = v.data;
             }
-            Message::Audio(a) => audio_samples += a.samples.len() as u64 / a.channels.max(1) as u64,
+            Message::Audio(a) => {
+                audio_samples += a.samples.len() as u64 / a.channels.max(1) as u64;
+                audio_peak = a.samples.iter().fold(audio_peak, |m, &s| m.max((s as i32).abs()));
+            }
             Message::Pong { echo } => {
                 let now = now_100ns();
                 let rtt = now - echo;
@@ -120,6 +125,7 @@ pub fn watch(address: &str, duration: Duration, max: Option<(u32, u32)>, save: O
         "avg_frame_kb": if frames > 0 { bytes / frames / 1024 } else { 0 },
         "frames_dropped_by_server": gaps,
         "audio_seconds": audio_samples as f64 / welcome.stream.audio_rate.max(1) as f64,
+        "audio_peak": audio_peak,
         "round_trip_ms": rtt_ms,
         "frame_age_ms": median_age,
         "decode_ms": decode_ms,
