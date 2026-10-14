@@ -184,6 +184,7 @@ mod tests {
         round_trip(Message::Mister(MisterState { connected: false, reason: "connect refused".into() }));
         round_trip(Message::Gap(Gap { video: 3, audio: 0 }));
         round_trip(Message::Error(ErrorMsg { message: "no such stream".into() }));
+        round_trip(Message::Status(Status { key: "coreRunning".into(), value: "HP9K715".into() }));
     }
 
     #[test]

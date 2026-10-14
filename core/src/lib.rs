@@ -6,6 +6,7 @@ pub mod capi;
 pub mod controller;
 pub mod input;
 pub mod keymap;
+pub mod link;
 pub mod ndi;
 pub mod profiles;
 pub mod session;

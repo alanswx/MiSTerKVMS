@@ -11,7 +11,10 @@ use std::time::{Duration, Instant};
 use serde::Serialize;
 use tungstenite::{Message, WebSocket};
 
+use mkvm::InputCmd;
+
 use crate::input::{InputSettings, InputState, KeyResult, MouseButton};
+use crate::link::MkvmLink;
 use crate::keymap::hid;
 
 /// Mouse deltas are batched and sent at most this often (~250 Hz).
@@ -198,6 +201,41 @@ impl MisterSession {
 }
 
 impl MisterSession {
+    /// Input through a capture server's stream instead of straight to mrext:
+    /// the server forwards it to the MiSTer while this viewer has control.
+    pub(crate) fn with_link(link: Arc<MkvmLink>, observer: Arc<dyn SessionObserver>) -> Arc<Self> {
+        let (tx, rx) = mpsc::channel();
+        let counters = Arc::new(Counters::default());
+        let worker_counters = counters.clone();
+        thread::Builder::new()
+            .name(format!("input-{}", link.address().stream))
+            .spawn(move || LinkWorker { link, observer, rx, counters: worker_counters }.run())
+            .expect("spawn session worker");
+        Arc::new(Self {
+            tx,
+            input: Mutex::new(InputState::default()),
+            counters,
+            rate: Mutex::new((Instant::now(), 0, 0.0)),
+            cursor_sink: Mutex::new(None),
+        })
+    }
+
+    /// For the capture server, which forwards input it received already
+    /// translated: one mrext message, as is.
+    pub fn send_message(&self, message: String) {
+        self.push(Cmd::Send(message));
+    }
+
+    /// Capture server: relative movement already scaled by the viewer.
+    pub fn move_raw(&self, dx: f64, dy: f64) {
+        self.push(Cmd::Move(dx, dy));
+    }
+
+    /// Capture server: pause before the next message (key taps).
+    pub fn delay(&self, ms: u32) {
+        self.push(Cmd::Delay(Duration::from_millis(ms.min(1000) as u64)));
+    }
+
     pub(crate) fn set_cursor_sink(&self, sink: Option<Arc<dyn CursorSink>>) {
         *self.cursor_sink.lock().unwrap() = sink;
     }
@@ -223,6 +261,71 @@ impl Drop for MisterSession {
 }
 
 type Socket = WebSocket<TcpStream>;
+
+/// Sends input over a capture server link, batched: mouse movement every
+/// `MOUSE_FLUSH`, everything else at once and in order.
+struct LinkWorker {
+    link: Arc<MkvmLink>,
+    observer: Arc<dyn SessionObserver>,
+    rx: Receiver<Cmd>,
+    counters: Arc<Counters>,
+}
+
+impl LinkWorker {
+    fn run(self) {
+        self.link.set_observer(Some(self.observer.clone()));
+        let mut pending = (0.0f64, 0.0f64);
+        let mut last_flush = Instant::now();
+        loop {
+            let mut batch = Vec::new();
+            let mut next = match self.rx.recv_timeout(MOUSE_FLUSH) {
+                Ok(cmd) => Some(cmd),
+                Err(RecvTimeoutError::Timeout) => None,
+                Err(RecvTimeoutError::Disconnected) => break,
+            };
+            let mut shutdown = false;
+            while let Some(cmd) = next.take() {
+                self.counters.queued.fetch_sub(1, Ordering::Relaxed);
+                match cmd {
+                    Cmd::Shutdown => shutdown = true,
+                    Cmd::Move(dx, dy) => {
+                        pending.0 += dx;
+                        pending.1 += dy;
+                    }
+                    Cmd::Send(m) => {
+                        flush_move(&mut pending, &mut batch);
+                        batch.push(InputCmd::Send { m });
+                    }
+                    Cmd::Delay(d) => {
+                        flush_move(&mut pending, &mut batch);
+                        batch.push(InputCmd::Delay { ms: d.as_millis() as u32 });
+                    }
+                }
+                next = self.rx.try_recv().ok();
+            }
+            if last_flush.elapsed() >= MOUSE_FLUSH || shutdown {
+                flush_move(&mut pending, &mut batch);
+                last_flush = Instant::now();
+            }
+            let n = batch.iter().filter(|c| !matches!(c, InputCmd::Delay { .. })).count() as u64;
+            if self.link.send_input(batch) {
+                self.counters.sent.fetch_add(n, Ordering::Relaxed);
+            }
+            self.counters.connected.store(self.link.is_connected() as u64, Ordering::Relaxed);
+            if shutdown {
+                break;
+            }
+        }
+        self.link.set_observer(None);
+    }
+}
+
+fn flush_move(pending: &mut (f64, f64), batch: &mut Vec<InputCmd>) {
+    if pending.0 != 0.0 || pending.1 != 0.0 {
+        batch.push(InputCmd::Move { dx: pending.0, dy: pending.1 });
+        *pending = (0.0, 0.0);
+    }
+}
 
 struct Worker {
     host: String,

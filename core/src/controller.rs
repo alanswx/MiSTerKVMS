@@ -14,11 +14,12 @@ use serde::Serialize;
 
 use crate::input::{KeyResult, MouseButton};
 use crate::keymap::hid;
+use crate::link::{MkvmLink, StreamState};
 use crate::log;
-use crate::profiles::{HostProfile, ProfileStore};
+use crate::profiles::{HostProfile, ProfileStore, SourceKind};
 use crate::session::{ConnectionState, InputStats, MisterSession, SessionObserver};
 use crate::video::ffmpeg::FfmpegRecorder;
-use crate::video::{CursorModel, DisplaySettings, FrameOutput, MediaSink, NativeSurface, VideoSession, VideoStats};
+use crate::video::{CursorModel, DisplaySettings, FrameOutput, MediaSink, NativeSurface, VideoSession, VideoSource, VideoStats};
 
 const TICK: Duration = Duration::from_millis(500);
 /// How long the stats overlay stays up after something changes.
@@ -51,6 +52,8 @@ pub struct ControllerState {
     /// Path of the last finished recording.
     pub last_recording: Option<String>,
     pub recording_error: Option<String>,
+    /// Capture server hosts: the stream's connection and who has control.
+    pub stream: Option<StreamState>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, uniffi::Enum)]
@@ -106,6 +109,9 @@ struct Recording {
 struct State {
     profile: Option<HostProfile>,
     session: Option<Arc<MisterSession>>,
+    /// Capture server hosts: the stream connection (video, audio, input).
+    link: Option<Arc<MkvmLink>>,
+    stream: Option<StreamState>,
     video: Option<Arc<VideoSession>>,
     surface: Option<(NativeSurface, u32, u32, f32)>,
     /// Where pictures go for an `Offscreen` surface.
@@ -136,6 +142,8 @@ impl Default for State {
         Self {
             profile: None,
             session: None,
+            link: None,
+            stream: None,
             video: None,
             surface: None,
             frames: None,
@@ -265,19 +273,41 @@ impl Controller {
             return;
         }
         log(&format!(
-            "host: open '{}' mister {} ndi '{}'",
-            profile.name, profile.mister_host, profile.ndi_source
+            "host: open '{}' source {:?} stream '{}' local '{}' mister {} ndi '{}'",
+            profile.name,
+            profile.source_kind(),
+            profile.stream,
+            profile.local_video,
+            profile.mister_host,
+            profile.ndi_source
         ));
         self.close();
+        let viewer = self.viewer_name();
         {
             let mut s = self.inner.state.lock().unwrap();
             s.display = profile.display_settings();
             s.profile = Some(profile.clone());
             s.generation += 1;
-            if profile.mister_host.is_empty() {
+            let observer = Arc::new(Observer { inner: Arc::downgrade(&self.inner), generation: s.generation });
+            if profile.source_kind() == SourceKind::Capture && profile.stream.trim().is_empty() {
+                s.connection = ConnectionState::Disconnected { reason: "no capture stream chosen".into() };
+            } else if profile.source_kind() == SourceKind::Capture {
+                match mkvm::StreamAddress::parse(&profile.stream) {
+                    Ok(address) => {
+                        let link = MkvmLink::connect(address, viewer);
+                        let (w, h) = profile.max_size();
+                        link.set_quality(w, h, None);
+                        let session = MisterSession::with_link(link.clone(), observer);
+                        session.set_settings(profile.input_settings());
+                        s.session = Some(session);
+                        s.link = Some(link);
+                        s.capture_on_connect = true;
+                    }
+                    Err(e) => s.connection = ConnectionState::Disconnected { reason: e },
+                }
+            } else if profile.mister_host.is_empty() {
                 s.connection = ConnectionState::Disconnected { reason: "no MiSTer address set".into() };
             } else {
-                let observer = Arc::new(Observer { inner: Arc::downgrade(&self.inner), generation: s.generation });
                 let session = MisterSession::new(profile.mister_host.clone(), profile.mister_port, observer);
                 session.set_settings(profile.input_settings());
                 s.session = Some(session);
@@ -295,6 +325,10 @@ impl Controller {
         if let Some(session) = s.session.take() {
             session.disconnect();
         }
+        if let Some(link) = s.link.take() {
+            link.close();
+        }
+        s.stream = None;
         s.generation += 1;
         s.profile = None;
         s.capturing = false;
@@ -326,7 +360,50 @@ impl Controller {
             recording_seconds: s.recording.as_ref().map(|r| r.since.elapsed().as_secs_f64()),
             last_recording: s.last_recording.clone(),
             recording_error: s.recording_error.clone(),
+            stream: s.stream.clone(),
         }
+    }
+
+    /// Capture server hosts: take control of the MiSTer from whoever has it.
+    /// Always granted.
+    pub fn take_control(&self) {
+        let link = self.inner.state.lock().unwrap().link.clone();
+        if let Some(link) = link {
+            link.take_control();
+        }
+    }
+
+    /// How this computer appears to other viewers (the computer's name
+    /// unless set).
+    pub fn viewer_name(&self) -> String {
+        let name = self.inner.store.data().viewer_name;
+        if name.trim().is_empty() {
+            computer_name()
+        } else {
+            name
+        }
+    }
+
+    pub fn set_viewer_name(&self, name: String) {
+        self.inner.store.change(|d| d.viewer_name = name.trim().to_string());
+    }
+
+    /// Change the open host's quality ("auto", "best", "balanced", "low")
+    /// and remember it.
+    pub fn set_quality(&self, quality: String) {
+        let (link, id) = {
+            let mut s = self.inner.state.lock().unwrap();
+            let link = s.link.clone();
+            let Some(p) = s.profile.as_mut() else { return };
+            p.quality = quality.clone();
+            (link, p.id.clone())
+        };
+        self.inner.store.update(&id, |p| p.quality = quality.clone());
+        if let Some(link) = link {
+            let (w, h) = HostProfile { quality, ..Default::default() }.max_size();
+            link.set_quality(w, h, None);
+        }
+        self.inner.notify(ControllerEvent::Changed);
     }
 
     /// The open host's input session (shells whose capture talks to it
@@ -698,11 +775,24 @@ impl Inner {
         let (Some(profile), Some((surface, w, h, scale))) = (s.profile.clone(), s.surface.clone()) else {
             return;
         };
-        if s.video.is_some() || profile.ndi_source.is_empty() || w < 2 || h < 2 {
+        if s.video.is_some() || w < 2 || h < 2 {
             return;
         }
+        let source = match profile.source_kind() {
+            SourceKind::Capture => match &s.link {
+                Some(link) => VideoSource::Link(link.clone()),
+                None => return,
+            },
+            SourceKind::Local if !profile.local_video.is_empty() => {
+                VideoSource::Local { video: profile.local_video.clone(), audio: profile.local_audio.clone() }
+            }
+            SourceKind::Ndi if !profile.ndi_source.is_empty() => {
+                VideoSource::Ndi { source: profile.ndi_source.clone(), extra_ip: profile.obs_host.clone() }
+            }
+            _ => return,
+        };
         let frames = s.frames.clone();
-        match VideoSession::start(profile.ndi_source.clone(), profile.obs_host.clone(), surface, frames, w, h, scale) {
+        match VideoSession::start(source, surface, frames, w, h, scale) {
             Ok(video) => {
                 video.set_display(s.display.clone());
                 video.set_muted(s.muted);
@@ -820,28 +910,39 @@ impl Inner {
     }
 
     fn tick(&self) {
-        let (session, video) = {
+        let (session, video, link) = {
             let s = self.state.lock().unwrap();
-            (s.session.clone(), s.video.clone())
+            (s.session.clone(), s.video.clone(), s.link.clone())
         };
+        let stream = link.map(|l| l.stream_state());
         let input_stats = session.map(|s| s.stats());
         let renamed = video.as_ref().and_then(|v| v.take_renamed_source());
         let video_stats = video.map(|v| v.stats());
         if let Some(renamed) = renamed {
             self.source_renamed(renamed);
         }
-        let save_model = {
+        let (save_model, lost_control) = {
             let mut s = self.state.lock().unwrap();
+            // Someone took control: stop capturing here.
+            let had = s.stream.as_ref().is_some_and(|st| st.have_control);
+            let has = stream.as_ref().is_some_and(|st| st.have_control);
+            let lost_control = had && !has && s.capturing;
+            s.stream = stream;
             s.input_stats = input_stats;
             s.video_stats = video_stats;
             s.check_signature();
             if s.stats_visible && Instant::now() >= s.stats_hide_at {
                 s.stats_visible = false;
             }
-            s.last_model_save.elapsed() >= MODEL_SAVE
+            (s.last_model_save.elapsed() >= MODEL_SAVE, lost_control)
         };
         if save_model {
             self.save_cursor_model();
+        }
+        if lost_control {
+            log("host: control taken by another viewer");
+            self.stop_platform_capture();
+            self.notify(ControllerEvent::ReleaseRequested);
         }
         self.notify(ControllerEvent::Changed);
     }
@@ -855,6 +956,21 @@ fn tick_loop(inner: Weak<Inner>) {
             None => return,
         }
     }
+}
+
+/// The computer's name, for other viewers to see.
+fn computer_name() -> String {
+    let from_env = std::env::var("COMPUTERNAME").or_else(|_| std::env::var("HOSTNAME")).unwrap_or_default();
+    if !from_env.trim().is_empty() {
+        return from_env.trim().to_string();
+    }
+    std::process::Command::new("hostname")
+        .output()
+        .ok()
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .map(|s| s.trim().trim_end_matches(".local").to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "MiSTerKVMS".into())
 }
 
 /// Session callbacks (worker thread) → controller state.
@@ -964,6 +1080,10 @@ mod tests {
     #[test]
     fn host_without_address_reports_why() {
         let (c, _) = controller();
+        let p = HostProfile { source: "capture".into(), ..Default::default() };
+        c.save_profile(p.clone());
+        c.open(p.id);
+        assert_eq!(c.state().connection, ConnectionState::Disconnected { reason: "no capture stream chosen".into() });
         let p = HostProfile::default();
         c.save_profile(p.clone());
         c.open(p.id);
@@ -974,11 +1094,84 @@ mod tests {
         assert_eq!(c.key_event(0x04, true), KeyResult::Ignored);
     }
 
+    /// A capture server stream end to end against a fake server: connect,
+    /// input arrives as mkvm Input, control taken away releases capture.
+    #[test]
+    fn capture_stream_carries_input_and_control() {
+        use mkvm::*;
+        use std::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let (tx, rx) = std::sync::mpsc::channel();
+        thread::spawn(move || {
+            let (mut sock, _) = listener.accept().unwrap();
+            let mut read = sock.try_clone().unwrap();
+            let Message::Hello(hello) = read_message(&mut read).unwrap().0 else { panic!("no hello") };
+            assert_eq!(hello.stream, "MiSTer SS1");
+            let info = StreamInfo {
+                name: hello.stream,
+                mister: Some("10.0.0.5".into()),
+                width: 0,
+                height: 0,
+                fps: 0.0,
+                audio_rate: 48000,
+                audio_channels: 2,
+                sizes: vec![],
+                codecs: vec![Codec::Jpeg],
+            };
+            write_message(&mut sock, &Message::Welcome(Welcome { protocol: 1, server: "test".into(), viewer_id: 1, stream: info }), 0).unwrap();
+            write_message(&mut sock, &Message::Mister(MisterState { connected: true, reason: String::new() }), 0).unwrap();
+            write_message(&mut sock, &Message::Control(ControlState { holder: Some(Viewer { id: 1, name: hello.viewer }), you: true }), 0).unwrap();
+            write_message(&mut sock, &Message::Status(Status { key: "coreRunning".into(), value: "HP9K715".into() }), 0).unwrap();
+            loop {
+                match read_message(&mut read) {
+                    Ok((Message::Input(cmds), _)) => {
+                        tx.send(cmds).unwrap();
+                        // Someone else takes control.
+                        let other = Viewer { id: 2, name: "Other PC".into() };
+                        write_message(&mut sock, &Message::Control(ControlState { holder: Some(other), you: false }), 0).unwrap();
+                    }
+                    Ok(_) => {}
+                    Err(_) => return,
+                }
+            }
+        });
+
+        let (c, events) = controller();
+        let p = HostProfile { stream: format!("mkvm://127.0.0.1:{port}/MiSTer%20SS1"), ..Default::default() };
+        c.save_profile(p.clone());
+        c.open(p.id);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while (c.state().connection != ConnectionState::Connected || c.state().core_running.is_empty()) && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(20));
+        }
+        assert_eq!(c.state().connection, ConnectionState::Connected);
+        assert_eq!(c.state().core_running, "HP9K715");
+        assert!(events.0.lock().unwrap().contains(&ControllerEvent::CaptureRequested));
+
+        c.set_capturing(true);
+        c.inner.tick();
+        assert!(c.state().stream.unwrap().have_control);
+        c.key_event(0x04, true); // A
+        let cmds = rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert_eq!(cmds, vec![InputCmd::Send { m: "kbdRawDown:30".into() }]);
+
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while c.state().stream.as_ref().is_some_and(|s| s.holder.is_empty()) && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(20));
+            c.inner.tick();
+        }
+        assert_eq!(c.state().stream.unwrap().holder, "Other PC");
+        assert!(events.0.lock().unwrap().contains(&ControllerEvent::ReleaseRequested));
+        c.close();
+    }
+
     #[test]
     fn unreachable_mister_disconnects_and_capture_releases() {
         let (c, events) = controller();
         // Port 9 on localhost: nothing listens, so the connect fails fast.
-        let p = HostProfile { mister_host: "127.0.0.1".into(), mister_port: 9, ..Default::default() };
+        let p = HostProfile { source: "ndi".into(), mister_host: "127.0.0.1".into(), mister_port: 9, ..Default::default() };
         c.save_profile(p.clone());
         c.open(p.id);
         let deadline = Instant::now() + Duration::from_secs(5);

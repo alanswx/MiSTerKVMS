@@ -22,7 +22,21 @@ use crate::video::{DisplaySettings, ScaleMode};
 pub struct HostProfile {
     pub id: String,
     pub name: String,
-    /// MiSTer running mrext Remote.
+    /// Where video comes from: "capture" (a capture server stream), "local"
+    /// (a capture card on this computer) or "ndi" (legacy). Empty: decided
+    /// by which of `stream`, `local_video` and `ndi_source` is set (hosts
+    /// saved before sources existed, and shells that don't set it).
+    pub source: String,
+    /// Capture server stream, `mkvm://host/stream`.
+    pub stream: String,
+    /// Capture card on this computer: video and audio device ids.
+    pub local_video: String,
+    pub local_audio: String,
+    /// "auto", "best", "balanced" (1080p) or "low" (720p). Capture server
+    /// streams only.
+    pub quality: String,
+    /// MiSTer running mrext Remote. Not needed for capture server streams:
+    /// the server talks to the MiSTer.
     pub mister_host: String,
     pub mister_port: u16,
     /// OBS PC sending NDI (optional: NDI discovery usually finds it by name).
@@ -50,6 +64,11 @@ impl Default for HostProfile {
         Self {
             id: new_id(),
             name: "New MiSTer".into(),
+            source: String::new(),
+            stream: String::new(),
+            local_video: String::new(),
+            local_audio: String::new(),
+            quality: "auto".into(),
             mister_host: String::new(),
             mister_port: crate::default_mrext_port(),
             obs_host: String::new(),
@@ -67,7 +86,35 @@ impl Default for HostProfile {
     }
 }
 
+/// Where a host's video comes from (see `HostProfile::source`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SourceKind {
+    Capture,
+    Local,
+    Ndi,
+}
+
 impl HostProfile {
+    pub fn source_kind(&self) -> SourceKind {
+        match self.source.as_str() {
+            "capture" => SourceKind::Capture,
+            "local" => SourceKind::Local,
+            "ndi" => SourceKind::Ndi,
+            _ if !self.stream.trim().is_empty() => SourceKind::Capture,
+            _ if !self.local_video.is_empty() => SourceKind::Local,
+            _ => SourceKind::Ndi,
+        }
+    }
+
+    /// The largest picture to ask a capture server for (None: native).
+    pub fn max_size(&self) -> (Option<u32>, Option<u32>) {
+        match self.quality.as_str() {
+            "balanced" => (Some(1920), Some(1080)),
+            "low" => (Some(1280), Some(720)),
+            _ => (None, None),
+        }
+    }
+
     pub fn input_settings(&self) -> InputSettings {
         InputSettings {
             mouse_sensitivity: self.mouse_sensitivity,
@@ -116,6 +163,9 @@ pub struct AppData {
     pub profiles: Vec<HostProfile>,
     /// Stats overlay always shown.
     pub stats_pinned: bool,
+    /// How this computer appears to other viewers of a capture server
+    /// stream ("Dani's Mac has control"). Empty: the computer's name.
+    pub viewer_name: String,
     /// Set once the shell has imported settings from an older storage
     /// (macOS UserDefaults), so it isn't done twice.
     pub imported_legacy: bool,

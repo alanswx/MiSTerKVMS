@@ -1,7 +1,9 @@
-//! NDI video + audio for one session: a receive thread (NDI → latest-frame
-//! slot + audio buffer) and a render thread (slot → GPU → view).
+//! Video + audio for one session: a source (NDI, a capture server stream
+//! or a capture card on this computer) feeding a latest-frame slot and an
+//! audio buffer, and a render thread (slot → GPU → view).
 
 mod audio;
+mod local;
 pub mod crop;
 pub mod cursor;
 pub mod ffmpeg;
@@ -16,12 +18,37 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use crate::ndi::{self, Captured};
 use audio::AudioOut;
 use crop::{Crop, Stabilizer};
+use kvms_codec as codec;
 use cursor::{CursorDetector, CursorTracker};
 
 use serde::{Deserialize, Serialize};
 
+use crate::link::{LinkMedia, MkvmLink};
 use crate::log;
 use crate::session::{CursorSink, MisterSession};
+
+/// Where a session's pictures and sound come from.
+#[derive(Clone)]
+pub enum VideoSource {
+    /// An NDI source (legacy: OBS + DistroAV). `extra_ip` is the OBS PC's
+    /// address if discovery can't find it.
+    Ndi { source: String, extra_ip: String },
+    /// A stream on a capture server.
+    Link(Arc<MkvmLink>),
+    /// A capture card on this computer: video device id and audio device id
+    /// (empty: no audio).
+    Local { video: String, audio: String },
+}
+
+impl VideoSource {
+    fn describe(&self) -> String {
+        match self {
+            VideoSource::Ndi { source, extra_ip } => format!("NDI '{source}' (obs host '{extra_ip}')"),
+            VideoSource::Link(link) => link.address().to_string(),
+            VideoSource::Local { video, audio } => format!("local '{video}' audio '{audio}'"),
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, uniffi::Enum)]
 #[serde(rename_all = "camelCase")]
@@ -305,6 +332,8 @@ pub struct VideoSession {
     shared: Arc<Shared>,
     threads: Mutex<Vec<JoinHandle<()>>>,
     input: Mutex<Option<Arc<MisterSession>>>,
+    /// Capture server stream: frames arrive on the link's own thread.
+    link: Option<Arc<MkvmLink>>,
 }
 
 #[uniffi::export]
@@ -335,23 +364,25 @@ impl VideoSession {
         height_px: u32,
         points_scale: f32,
     ) -> Result<Arc<Self>, VideoError> {
-        Self::start(ndi_source, extra_ip, surface, None, width_px, height_px, points_scale)
+        Self::start(VideoSource::Ndi { source: ndi_source, extra_ip }, surface, None, width_px, height_px, points_scale)
     }
 }
 
 impl VideoSession {
     /// `with_surface`, plus where `Offscreen` pictures go.
     pub fn start(
-        ndi_source: String,
-        extra_ip: String,
+        source: VideoSource,
         surface: NativeSurface,
         frames: Option<Arc<FrameOutput>>,
         width_px: u32,
         height_px: u32,
         points_scale: f32,
     ) -> Result<Arc<Self>, VideoError> {
-        let ndi = ndi::ndi().map_err(|message| VideoError::NdiUnavailable { message })?;
-        log(&format!("video: start '{ndi_source}' (obs host '{extra_ip}', {width_px}x{height_px} px)"));
+        let ndi = match &source {
+            VideoSource::Ndi { .. } => Some(ndi::ndi().map_err(|message| VideoError::NdiUnavailable { message })?),
+            _ => None,
+        };
+        log(&format!("video: start {} ({width_px}x{height_px} px)", source.describe()));
         // SAFETY: the shell keeps the view alive until stop() returns.
         let (instance, surface) = unsafe { render::create_surface(&surface) }
             .map_err(|message| VideoError::Graphics { message })?;
@@ -401,16 +432,42 @@ impl VideoSession {
             .map_err(|e| VideoError::Graphics { message: e.to_string() })?
             .map_err(|message| VideoError::Graphics { message })?;
 
-        let recv_shared = shared.clone();
-        let receive = thread::Builder::new()
-            .name("ndi-receive".into())
-            .spawn(move || receive_loop(ndi, ndi_source, extra_ip, recv_shared))
-            .map_err(|e| VideoError::Graphics { message: e.to_string() })?;
+        let mut threads = vec![render];
+        let mut link = None;
+        match source {
+            VideoSource::Ndi { source, extra_ip } => {
+                let ndi = ndi.expect("loaded above");
+                let recv_shared = shared.clone();
+                threads.push(
+                    thread::Builder::new()
+                        .name("ndi-receive".into())
+                        .spawn(move || receive_loop(ndi, source, extra_ip, recv_shared))
+                        .map_err(|e| VideoError::Graphics { message: e.to_string() })?,
+                );
+            }
+            VideoSource::Link(l) => {
+                shared.counters.lock().unwrap().state = "connecting".into();
+                let sink = LinkSink { shared: shared.clone(), deliver: Mutex::new((Deliver::default(), codec::Bgra::default())) };
+                l.set_media(Some(Arc::new(sink)));
+                link = Some(l);
+            }
+            VideoSource::Local { video, audio } => {
+                shared.counters.lock().unwrap().state = "opening".into();
+                let recv_shared = shared.clone();
+                threads.push(
+                    thread::Builder::new()
+                        .name("capture-receive".into())
+                        .spawn(move || local::receive_loop(video, audio, recv_shared))
+                        .map_err(|e| VideoError::Graphics { message: e.to_string() })?,
+                );
+            }
+        }
 
         Ok(Arc::new(Self {
             shared,
-            threads: Mutex::new(vec![render, receive]),
+            threads: Mutex::new(threads),
             input: Mutex::new(None),
+            link,
         }))
     }
 }
@@ -539,6 +596,9 @@ impl VideoSession {
         if let Some(session) = self.input.lock().unwrap().take() {
             session.set_cursor_sink(None);
         }
+        if let Some(link) = &self.link {
+            link.set_media(None);
+        }
         self.shared.stop.store(true, Ordering::Relaxed);
         self.shared.wake.notify_all();
         for t in self.threads.lock().unwrap().drain(..) {
@@ -599,9 +659,7 @@ fn receive_loop(ndi: &'static ndi::Ndi, source: String, extra_ip: String, shared
     };
     let mut next_source_check = Instant::now() + SOURCE_CHECK_AFTER;
     let mut last_video = Instant::now();
-    let mut stabilizer = Stabilizer::default();
-    let mut detector = CursorDetector::default();
-    let mut frames_since_crop = u32::MAX;
+    let mut deliver = Deliver::default();
     let mut last_perf = Instant::now();
 
     while !shared.stop.load(Ordering::Relaxed) {
@@ -610,75 +668,23 @@ fn receive_loop(ndi: &'static ndi::Ndi, source: String, extra_ip: String, shared
             Captured::Video(v) => {
                 last_video = Instant::now();
                 let (w, h, stride) = (v.frame.xres as u32, v.frame.yres as u32, v.stride() as u32);
-                let data = v.data();
-
-                let arrived = Instant::now();
-                let auto_crop = shared.display.lock().unwrap().auto_crop;
-                if auto_crop {
-                    // Re-check borders twice a second at 60 fps; cheap but not free.
-                    frames_since_crop = frames_since_crop.saturating_add(1);
-                    if frames_since_crop >= 30 {
-                        frames_since_crop = 0;
-                        let detected = crop::detect(data, stride as usize, w, h);
-                        let crop = stabilizer.update(detected);
-                        shared.counters.lock().unwrap().crop = crop;
-                    }
-                } else {
-                    stabilizer.reset();
-                    frames_since_crop = u32::MAX;
-                }
-
-                // The predictive cursor works within the visible picture.
-                let bounds = shared.counters.lock().unwrap().crop.unwrap_or(Crop::full(w, h));
-                shared.cursor.lock().unwrap().set_bounds(bounds);
-                detector.process(data, stride as usize, w, h, &shared.cursor, arrived);
-
                 let timestamp = match v.frame.timestamp {
-                    ndi::sys::NDIlib_recv_timestamp_undefined => now_100ns(),
+                    ndi::sys::NDIlib_recv_timestamp_undefined => 0,
                     t => t,
                 };
-                record_video(&shared, data, stride, w, h, timestamp);
-
-                let mut slot = shared.slot.lock().unwrap();
-                let mut buf = slot
-                    .frame
-                    .take()
-                    .map(|f| {
-                        shared.counters.lock().unwrap().skipped += 1;
-                        f.data
-                    })
-                    .or_else(|| slot.spare.take())
-                    .unwrap_or_default();
-                buf.clear();
-                buf.extend_from_slice(data);
-                let ts = v.frame.timestamp;
-                slot.frame = Some(Frame {
-                    data: buf,
-                    stride,
-                    width: w,
-                    height: h,
-                    timestamp: if ts == ndi::sys::NDIlib_recv_timestamp_undefined { 0 } else { ts },
-                });
-                drop(slot);
-                shared.wake.notify_all();
-
+                deliver.video(&shared, v.data(), stride, w, h, timestamp);
                 if shared.counters.lock().unwrap().state != "connected" {
                     set_state(&source, "connected");
                 }
-                let mut c = shared.counters.lock().unwrap();
-                c.received += 1;
-                c.source = (w, h);
             }
             Captured::Audio(a) => {
                 if a.frame.FourCC == ndi::sys::NDIlib_FourCC_audio_type_FLTP {
-                    record_audio(&shared, &a);
-                }
-                if let Some(out) = shared.audio.lock().unwrap().as_ref() {
-                    if !out.is_muted() && a.frame.FourCC == ndi::sys::NDIlib_FourCC_audio_type_FLTP {
-                        let planes: Vec<&[f32]> =
-                            (0..a.frame.no_channels as usize).map(|ch| a.channel(ch)).collect();
-                        out.push(&planes, a.frame.sample_rate as u32);
-                    }
+                    let planes: Vec<&[f32]> = (0..a.frame.no_channels.max(0) as usize).map(|ch| a.channel(ch)).collect();
+                    let timestamp = match a.frame.timestamp {
+                        ndi::sys::NDIlib_recv_timestamp_undefined => now_100ns(),
+                        t => t,
+                    };
+                    deliver_audio(&shared, &planes, a.frame.sample_rate as u32, timestamp);
                 }
             }
             Captured::Nothing => {
@@ -747,23 +753,141 @@ fn record_video(shared: &Shared, data: &[u8], stride: u32, w: u32, h: u32, times
     sink.video_frame(ptr, stride, cw, ch, timestamp);
 }
 
-fn record_audio(shared: &Shared, a: &ndi::AudioFrame<'_>) {
-    let sink = shared.sink.lock().unwrap();
-    let Some((sink, _)) = sink.as_ref() else { return };
-    let channels = a.frame.no_channels.max(1) as usize;
-    let samples = a.frame.no_samples as usize;
-    let planes: Vec<&[f32]> = (0..channels).map(|ch| a.channel(ch)).collect();
-    let mut interleaved = Vec::with_capacity(samples * channels);
-    for i in 0..samples {
-        for plane in &planes {
-            interleaved.push(plane[i]);
+/// Planar float audio from any source: to the speakers and the recorder.
+fn deliver_audio(shared: &Shared, planes: &[&[f32]], rate: u32, timestamp: i64) {
+    if planes.is_empty() {
+        return;
+    }
+    if let Some(out) = shared.audio.lock().unwrap().as_ref() {
+        if !out.is_muted() {
+            out.push(planes, rate);
         }
     }
-    let timestamp = match a.frame.timestamp {
-        ndi::sys::NDIlib_recv_timestamp_undefined => now_100ns(),
-        t => t,
-    };
-    sink.audio_frame(interleaved, channels as u32, a.frame.sample_rate as u32, timestamp);
+    let sink = shared.sink.lock().unwrap();
+    let Some((sink, _)) = sink.as_ref() else { return };
+    let samples = planes[0].len();
+    let mut interleaved = Vec::with_capacity(samples * planes.len());
+    for i in 0..samples {
+        for plane in planes {
+            interleaved.push(plane.get(i).copied().unwrap_or(0.0));
+        }
+    }
+    sink.audio_frame(interleaved, planes.len() as u32, rate, timestamp);
+}
+
+/// Per-source state for handing frames to the session: border detection
+/// and the predictive cursor's guest-cursor detector.
+struct Deliver {
+    stabilizer: Stabilizer,
+    detector: CursorDetector,
+    frames_since_crop: u32,
+}
+
+impl Default for Deliver {
+    fn default() -> Self {
+        Self { stabilizer: Stabilizer::default(), detector: CursorDetector::default(), frames_since_crop: u32::MAX }
+    }
+}
+
+impl Deliver {
+    /// One BGRA frame: borders, cursor, recording, then the slot for the
+    /// renderer. `timestamp` is when it was captured, 100 ns since the Unix
+    /// epoch on this machine's clock (0 if unknown).
+    fn video(&mut self, shared: &Shared, data: &[u8], stride: u32, w: u32, h: u32, timestamp: i64) {
+        let arrived = Instant::now();
+        let auto_crop = shared.display.lock().unwrap().auto_crop;
+        if auto_crop {
+            // Re-check borders twice a second at 60 fps; cheap but not free.
+            self.frames_since_crop = self.frames_since_crop.saturating_add(1);
+            if self.frames_since_crop >= 30 {
+                self.frames_since_crop = 0;
+                let detected = crop::detect(data, stride as usize, w, h);
+                let crop = self.stabilizer.update(detected);
+                shared.counters.lock().unwrap().crop = crop;
+            }
+        } else {
+            self.stabilizer.reset();
+            self.frames_since_crop = u32::MAX;
+        }
+
+        // The predictive cursor works within the visible picture.
+        let bounds = shared.counters.lock().unwrap().crop.unwrap_or(Crop::full(w, h));
+        shared.cursor.lock().unwrap().set_bounds(bounds);
+        self.detector.process(data, stride as usize, w, h, &shared.cursor, arrived);
+
+        record_video(shared, data, stride, w, h, if timestamp > 0 { timestamp } else { now_100ns() });
+
+        let mut slot = shared.slot.lock().unwrap();
+        let mut buf = slot
+            .frame
+            .take()
+            .map(|f| {
+                shared.counters.lock().unwrap().skipped += 1;
+                f.data
+            })
+            .or_else(|| slot.spare.take())
+            .unwrap_or_default();
+        buf.clear();
+        buf.extend_from_slice(&data[..(stride * h) as usize]);
+        slot.frame = Some(Frame { data: buf, stride, width: w, height: h, timestamp });
+        drop(slot);
+        shared.wake.notify_all();
+
+        let mut c = shared.counters.lock().unwrap();
+        c.received += 1;
+        c.source = (w, h);
+    }
+}
+
+/// A capture server stream's pictures and sound → this session.
+struct LinkSink {
+    shared: Arc<Shared>,
+    /// The frame handler and a reused decode buffer.
+    deliver: Mutex<(Deliver, codec::Bgra)>,
+}
+
+impl LinkMedia for LinkSink {
+    fn video(&self, video: &mkvm::Video, timestamp: i64) {
+        let mut guard = self.deliver.lock().unwrap();
+        let (deliver, picture) = &mut *guard;
+        match video.codec {
+            mkvm::Codec::Jpeg => {
+                if let Err(e) = codec::jpeg::decode(&video.data, picture) {
+                    log(&format!("video: {e}"));
+                    return;
+                }
+            }
+            // Never asked for yet (Hello only lists JPEG).
+            mkvm::Codec::H264 => return,
+        }
+        deliver.video(&self.shared, &picture.data, picture.stride, picture.width, picture.height, timestamp);
+        let mut c = self.shared.counters.lock().unwrap();
+        if c.state != "connected" {
+            c.state = "connected".into();
+        }
+    }
+
+    fn audio(&self, audio: &mkvm::Audio, timestamp: i64) {
+        let planes = deinterleave(&audio.samples, audio.channels as usize);
+        let refs: Vec<&[f32]> = planes.iter().map(|p| p.as_slice()).collect();
+        deliver_audio(&self.shared, &refs, audio.rate, timestamp);
+    }
+
+    fn state(&self, state: &str) {
+        let mut c = self.shared.counters.lock().unwrap();
+        if c.state != state {
+            log(&format!("video: stream {} -> {state}", c.state));
+            c.state = state.into();
+        }
+    }
+}
+
+/// Interleaved 16-bit PCM → one float plane per channel.
+fn deinterleave(samples: &[i16], channels: usize) -> Vec<Vec<f32>> {
+    let channels = channels.max(1);
+    (0..channels)
+        .map(|ch| samples.iter().skip(ch).step_by(channels).map(|s| *s as f32 / 32768.0).collect())
+        .collect()
 }
 
 fn render_loop(mut renderer: render::Renderer, shared: Arc<Shared>) {

@@ -24,6 +24,7 @@ pub enum Kind {
     Mister = 0x25,
     Gap = 0x26,
     Error = 0x27,
+    Status = 0x28,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -171,6 +172,14 @@ pub struct MisterState {
     pub reason: String,
 }
 
+/// A status value mrext pushed, e.g. ("coreRunning", "HP9K715"). The
+/// server sends the ones it knows after `Welcome`, then each change.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Status {
+    pub key: String,
+    pub value: String,
+}
+
 /// Frames or audio the server dropped for this viewer since the last `Gap`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Gap {
@@ -203,6 +212,7 @@ pub enum Message {
     Mister(MisterState),
     Gap(Gap),
     Error(ErrorMsg),
+    Status(Status),
     /// A kind this version doesn't know (from a newer peer); skip it.
     Unknown { kind: u8 },
 }
@@ -232,6 +242,7 @@ impl Message {
             Message::Mister(_) => Kind::Mister,
             Message::Gap(_) => Kind::Gap,
             Message::Error(_) => Kind::Error,
+            Message::Status(_) => Kind::Status,
             Message::Unknown { .. } => return None,
         })
     }
@@ -268,6 +279,7 @@ impl Message {
             Message::Mister(m) => (0, json(m)),
             Message::Gap(m) => (0, json(m)),
             Message::Error(m) => (0, json(m)),
+            Message::Status(m) => (0, json(m)),
             Message::Unknown { .. } => unreachable!(),
         };
         (kind, flags, payload)
@@ -310,6 +322,7 @@ impl Message {
             0x25 => Message::Mister(parse(&payload)?),
             0x26 => Message::Gap(parse(&payload)?),
             0x27 => Message::Error(parse(&payload)?),
+            0x28 => Message::Status(parse(&payload)?),
             other => Message::Unknown { kind: other },
         })
     }
