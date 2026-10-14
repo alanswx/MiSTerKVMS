@@ -133,6 +133,12 @@ pub enum Output {
     Bgra,
 }
 
+/// Show the built-in test pattern (`test:pattern`, with its own audio) in
+/// `devices()` and `audio_devices()`.
+pub fn set_test_pattern(on: bool) {
+    pattern::set_listed(on);
+}
+
 /// List video capture devices and their formats.
 pub fn devices() -> Result<Vec<VideoDevice>, CaptureError> {
     // Each card once: Media Foundation's entry when it can open the card,
@@ -202,7 +208,8 @@ impl VideoCapture {
     fn open_inner(id: &str, format: Option<VideoFormat>, output: Output, audio: bool) -> Result<Self, CaptureError> {
         if id == pattern::ID {
             let (p, format) = pattern::Pattern::open(output);
-            return Ok(Self { inner: Inner::Pattern(p), format, audio: None });
+            let audio = audio.then(|| p.audio());
+            return Ok(Self { inner: Inner::Pattern(p), format, audio });
         }
         #[cfg(windows)]
         {

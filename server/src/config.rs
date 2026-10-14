@@ -58,11 +58,13 @@ pub struct Settings {
     pub allow_lan: bool,
     /// Needed to change the configuration from the setup page (empty: none).
     pub password: String,
+    /// Offer the built-in test pattern (rainbow bars and a beep) as a card.
+    pub test_pattern: bool,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { port: mkvm::DEFAULT_PORT, setup_port: mkvm::SETUP_PORT, allow_lan: false, password: String::new() }
+        Self { port: mkvm::DEFAULT_PORT, setup_port: mkvm::SETUP_PORT, allow_lan: false, password: String::new(), test_pattern: false }
     }
 }
 
@@ -81,6 +83,8 @@ allow_lan = false
 ; Password to change the configuration from the setup page. Empty: none.
 ; Forgot it? Delete what's after the = and restart.
 password =
+; Offer a test pattern (rainbow bars and a beep) as a capture card (true/false).
+test_pattern = false
 ";
 
 /// The config folder: `MISTERKVMS_CAPTURE_CONFIG` if set; otherwise
@@ -154,6 +158,7 @@ pub fn parse_settings(text: &str) -> Settings {
             ("server", "setup_port") => s.setup_port = value.parse().unwrap_or(s.setup_port),
             ("setup", "allow_lan") => s.allow_lan = matches!(value.to_lowercase().as_str(), "true" | "yes" | "1" | "on"),
             ("setup", "password") => s.password = value.to_string(),
+            ("setup", "test_pattern") => s.test_pattern = matches!(value.to_lowercase().as_str(), "true" | "yes" | "1" | "on"),
             _ => {}
         }
     }
@@ -207,7 +212,7 @@ mod tests {
     #[test]
     fn parses_values_and_ignores_junk() {
         let s = parse_settings("[server]\nport=6000\n[setup]\n allow_lan = Yes \npassword = hunter 2\nnonsense\n[other]\nport=1");
-        assert_eq!(s, Settings { port: 6000, setup_port: 5971, allow_lan: true, password: "hunter 2".into() });
+        assert_eq!(s, Settings { port: 6000, setup_port: 5971, allow_lan: true, password: "hunter 2".into(), test_pattern: false });
     }
 
     #[test]

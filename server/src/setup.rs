@@ -18,7 +18,7 @@ use tiny_http::{Header, Method, Request, Response, StatusCode};
 
 use crate::config::{self, Settings, Streams};
 use crate::stream::{AudioPacket, Encoded, Subscriber, Want, PREVIEW_IDS};
-use crate::{log, Server};
+use crate::{log, service, Server};
 
 const PAGE: &str = include_str!("setup.html");
 /// Previews are for checking a card works, not for watching: keep them light.
@@ -68,7 +68,7 @@ fn handle(server: Arc<Server>, mut request: Request) {
     let peer = request.remote_addr().map(|a| a.ip());
     if !settings.allow_lan && !is_local(peer) {
         let body = "This setup page only opens on the capture PC itself.\n\
-                    To open it from other computers, set allow_lan = true in capture.ini and restart.";
+                    To open it from other computers, open it on the capture PC and turn on \"Open this page from other computers\".";
         let _ = request.respond(Response::from_string(body).with_status_code(StatusCode(403)));
         return;
     }
@@ -84,6 +84,27 @@ fn handle(server: Arc<Server>, mut request: Request) {
         (Method::Get, "/") => Response::from_string(PAGE).with_header(header("Content-Type", "text/html; charset=utf-8")),
         (Method::Get, "/api/state") => json_response(state(&server)),
         (Method::Get, "/api/devices") => json_response(devices()),
+        (Method::Get, "/api/service") => json_response(json!({ "service": service::status(), "local": is_local(peer) })),
+        (Method::Post, "/api/service") => {
+            if !authorised {
+                error(403, "wrong password")
+            } else if !is_local(peer) {
+                error(403, "the background service can only be changed on the capture PC itself")
+            } else {
+                match read_json::<serde_json::Value>(&mut request) {
+                    Ok(v) => match v.get("action").and_then(|a| a.as_str()).and_then(service::Action::parse) {
+                        Some(action) => service_action(&server, action, request),
+                        None => {
+                            let _ = request.respond(error(400, "unknown action"));
+                        }
+                    },
+                    Err(e) => {
+                        let _ = request.respond(error(400, &e));
+                    }
+                }
+                return;
+            }
+        }
         (Method::Post, "/api/password") => {
             if authorised {
                 json_response(json!({ "ok": true }))
@@ -109,6 +130,7 @@ fn handle(server: Arc<Server>, mut request: Request) {
                 error(403, "wrong password")
             } else {
                 match read_json::<serde_json::Value>(&mut request) {
+                    Ok(v) if v.get("allowLan").is_some() && !is_local(peer) => error(403, "this can only be changed on the capture PC itself"),
                     Ok(v) => match save_settings(&server, &v) {
                         Ok(()) => json_response(json!({ "ok": true })),
                         Err(e) => error(500, &e),
@@ -159,6 +181,7 @@ fn state(server: &Server) -> serde_json::Value {
         "port": settings.port,
         "allowLan": settings.allow_lan,
         "passwordSet": !settings.password.is_empty(),
+        "testPattern": settings.test_pattern,
         "configDir": server.dir().display().to_string(),
         "streams": streams,
     })
@@ -214,6 +237,9 @@ fn save_settings(server: &Server, v: &serde_json::Value) -> Result<(), String> {
     if let Some(allow) = v.get("allowLan").and_then(|a| a.as_bool()) {
         config::set_ini_value(dir, "setup", "allow_lan", if allow { "true" } else { "false" }).map_err(|e| e.to_string())?;
     }
+    if let Some(on) = v.get("testPattern").and_then(|a| a.as_bool()) {
+        config::set_ini_value(dir, "setup", "test_pattern", if on { "true" } else { "false" }).map_err(|e| e.to_string())?;
+    }
     if let Some(pw) = v.get("password").and_then(|p| p.as_str()) {
         config::set_ini_value(dir, "setup", "password", pw.trim()).map_err(|e| e.to_string())?;
     }
@@ -221,8 +247,34 @@ fn save_settings(server: &Server, v: &serde_json::Value) -> Result<(), String> {
     let reloaded = config::load_settings(dir);
     // Ports change only on restart.
     *settings = Settings { port: settings.port, setup_port: settings.setup_port, ..reloaded };
+    kvms_capture::set_test_pattern(settings.test_pattern);
     log(&format!("setup page: allow_lan {}, password {}", settings.allow_lan, if settings.password.is_empty() { "off" } else { "on" }));
     Ok(())
+}
+
+/// Install, start, stop… the background service. When this window's copy
+/// hands over to the service (install, start, restart), it answers and
+/// then exits, so the service can take the ports; the page reconnects.
+fn service_action(server: &Server, action: service::Action, request: Request) {
+    use service::Action::*;
+    let handover = !service::running_as_service() && matches!(action, Install | Start | Restart);
+    log(&format!("setup page: service {}", action.arg()));
+    match service::request(server.dir(), action) {
+        Ok(()) => {
+            let _ = request.respond(json_response(json!({ "ok": true, "handover": handover })));
+            if handover {
+                log("handing over to the service: this window closes");
+                thread::spawn(|| {
+                    thread::sleep(Duration::from_millis(300));
+                    std::process::exit(0);
+                });
+            }
+        }
+        Err(e) => {
+            log(&format!("setup page: service {}: {e}", action.arg()));
+            let _ = request.respond(error(500, &e));
+        }
+    }
 }
 
 fn read_json<T: for<'de> serde::Deserialize<'de>>(request: &mut Request) -> Result<T, String> {

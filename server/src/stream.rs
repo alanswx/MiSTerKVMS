@@ -23,6 +23,17 @@ const RETRY: Duration = Duration::from_secs(2);
 const NO_SIGNAL_AFTER: Duration = Duration::from_secs(1);
 /// Distinct picture sizes encoded at once (docs/CAPTURE-SERVER.md §6).
 const MAX_PIPELINES: usize = 3;
+/// Encoder threads per stream. Encoding a raw 1080p frame takes 10–17 ms,
+/// so one thread can't keep up with 60 fps whenever a frame runs long;
+/// several take turns and frames still go out in order.
+const ENCODERS: usize = 3;
+
+#[derive(Default)]
+struct Slot {
+    frame: Option<VideoFrame>,
+    /// Sequence number the next taken frame gets.
+    next_seq: u64,
+}
 
 /// One encoded picture, shared by every viewer that asked for its size.
 pub struct Encoded {
@@ -81,6 +92,8 @@ pub struct StreamStatus {
     pub mister_error: String,
     pub viewers: Vec<ViewerStatus>,
     pub encode_ms: f64,
+    /// Frames captured but never sent: every encoder was still busy.
+    pub skipped: u64,
 }
 
 #[derive(Debug, Clone, Default, serde::Serialize)]
@@ -98,9 +111,13 @@ pub struct Stream {
     stop: AtomicBool,
     subscribers: Mutex<Vec<Arc<dyn Subscriber>>>,
     status: Mutex<StreamStatus>,
-    /// Capture → encoder: the newest frame not yet encoded.
-    latest: Mutex<Option<VideoFrame>>,
+    /// Capture → encoders: the newest frame not yet taken.
+    latest: Mutex<Slot>,
     wake: Condvar,
+    /// Encoders finish out of order; frames go out in order: the sequence
+    /// number to deliver next.
+    delivered: Mutex<u64>,
+    delivered_cv: Condvar,
     control: Mutex<(Control, HeldInput)>,
     mister: Mutex<Option<Arc<MisterSession>>>,
     mister_status: Mutex<BTreeMap<String, String>>,
@@ -119,8 +136,10 @@ impl Stream {
             stop: AtomicBool::new(false),
             subscribers: Mutex::new(Vec::new()),
             status: Mutex::new(StreamStatus { error: "starting".into(), ..Default::default() }),
-            latest: Mutex::new(None),
+            latest: Mutex::new(Slot::default()),
             wake: Condvar::new(),
+            delivered: Mutex::new(0),
+            delivered_cv: Condvar::new(),
             control: Mutex::new((Control::default(), HeldInput::default())),
             mister: Mutex::new(None),
             mister_status: Mutex::new(BTreeMap::new()),
@@ -132,8 +151,10 @@ impl Stream {
         let mut threads = Vec::new();
         let s = stream.clone();
         threads.push(spawn(&format!("capture-{}", s.config.name), move || capture_loop(s)));
-        let s = stream.clone();
-        threads.push(spawn(&format!("encode-{}", s.config.name), move || encode_loop(s)));
+        for i in 0..ENCODERS {
+            let s = stream.clone();
+            threads.push(spawn(&format!("encode-{}-{i}", s.config.name), move || encode_loop(s)));
+        }
         if !stream.config.audio.is_empty() {
             let s = stream.clone();
             threads.push(spawn(&format!("audio-{}", s.config.name), move || audio_loop(s)));
@@ -410,7 +431,13 @@ fn capture_loop(stream: Arc<Stream>) {
                         stream.broadcast(Message::Format(f));
                     }
                     stream.set_signal(true);
-                    *stream.latest.lock().unwrap() = Some(frame);
+                    {
+                        let mut slot = stream.latest.lock().unwrap();
+                        if slot.frame.replace(frame).is_some() {
+                            // Every encoder busy: this frame never went out.
+                            stream.status.lock().unwrap().skipped += 1;
+                        }
+                    }
                     stream.wake.notify_all();
                 }
                 Ok(None) => {
@@ -432,114 +459,142 @@ fn capture_loop(stream: Arc<Stream>) {
     }
 }
 
-/// For each new frame: one encoded picture per distinct size viewers want.
+/// An encoder thread: takes the newest frame, encodes one picture per
+/// distinct size viewers want, and hands them out in capture order.
 fn encode_loop(stream: Arc<Stream>) {
     let mut native_bgra = Bgra::default();
     loop {
-        let frame = {
-            let mut latest = stream.latest.lock().unwrap();
+        let (seq, frame) = {
+            let mut slot = stream.latest.lock().unwrap();
             loop {
                 if stream.stopped() {
                     return;
                 }
-                if let Some(f) = latest.take() {
-                    break f;
+                if let Some(f) = slot.frame.take() {
+                    let seq = slot.next_seq;
+                    slot.next_seq += 1;
+                    break (seq, f);
                 }
-                latest = stream.wake.wait_timeout(latest, Duration::from_millis(200)).unwrap().0;
+                slot = stream.wake.wait_timeout(slot, Duration::from_millis(200)).unwrap().0;
             }
         };
-        let subs: Vec<Arc<dyn Subscriber>> = stream.subscribers.lock().unwrap().iter().filter(|s| s.want().video).cloned().collect();
-        if subs.is_empty() {
-            continue;
-        }
         let started = Instant::now();
-        // Viewer → target size, at most MAX_PIPELINES distinct.
-        let mut wanted: Vec<(Arc<dyn Subscriber>, (u32, u32))> = subs
-            .into_iter()
-            .map(|s| {
-                let w = s.want();
-                let size = scale::size_for(frame.width, frame.height, w.max_width, w.max_height);
-                (s, size)
-            })
-            .collect();
-        let mut targets: Vec<(u32, u32)> = wanted.iter().map(|(_, t)| *t).collect();
-        targets.sort_by(|a, b| (b.0 * b.1).cmp(&(a.0 * a.1)));
-        targets.dedup();
-        if targets.len() > MAX_PIPELINES {
-            let kept = targets[..MAX_PIPELINES].to_vec();
-            for (_, t) in wanted.iter_mut() {
-                if !kept.contains(t) {
-                    // The largest kept size that fits, else the smallest kept.
-                    *t = kept.iter().copied().find(|k| k.0 <= t.0 && k.1 <= t.1).unwrap_or(*kept.last().unwrap());
-                }
-            }
-            targets = kept;
+        let out = encode_frame(&stream, frame, &mut native_bgra);
+        let ms = started.elapsed().as_secs_f64() * 1000.0;
+        // Wait for the frames taken before this one to go out first.
+        let mut delivered = stream.delivered.lock().unwrap();
+        while *delivered < seq && !stream.stopped() {
+            delivered = stream.delivered_cv.wait_timeout(delivered, Duration::from_millis(200)).unwrap().0;
         }
-
-        let native = (frame.width, frame.height);
-        let needs_pixels = targets.iter().any(|t| *t != native) || frame.format != PixelFormat::Mjpeg;
-        if needs_pixels {
-            let ok = match frame.format {
-                PixelFormat::Mjpeg => jpeg::decode(&frame.data, &mut native_bgra).map_err(|e| e.to_string()),
-                PixelFormat::Nv12 => {
-                    convert::nv12_to_bgra(&frame.data, frame.width, frame.height, frame.stride, &mut native_bgra);
-                    Ok(())
-                }
-                PixelFormat::Yuy2 => {
-                    convert::yuy2_to_bgra(&frame.data, frame.width, frame.height, frame.stride, &mut native_bgra);
-                    Ok(())
-                }
-                PixelFormat::Bgra => {
-                    native_bgra = Bgra { width: frame.width, height: frame.height, stride: frame.stride, data: frame.data.clone() };
-                    Ok(())
-                }
-            };
-            if let Err(e) = ok {
-                log(&format!("stream '{}': {e}", stream.config.name));
-                continue;
-            }
-        }
-        let quality = stream.config.quality.clamp(1, 100);
-        let encode = |target: (u32, u32)| -> Option<Arc<Encoded>> {
-            let data = if target == native && frame.format == PixelFormat::Mjpeg {
-                frame.data.clone()
-            } else {
-                let mut out = Vec::new();
-                let result = if target == native {
-                    jpeg::encode(&native_bgra, quality, &mut out)
-                } else {
-                    let mut scaled = Bgra::default();
-                    scale::scale(&native_bgra, target.0, target.1, &mut scaled);
-                    jpeg::encode(&scaled, quality, &mut out)
-                };
-                if let Err(e) = result {
-                    log(&format!("stream '{}': {e}", stream.config.name));
-                    return None;
-                }
-                out
-            };
-            Some(Arc::new(Encoded { codec: Codec::Jpeg, width: target.0, height: target.1, data, timestamp: frame.timestamp }))
-        };
-        let encoded: Vec<((u32, u32), Option<Arc<Encoded>>)> = if targets.len() == 1 {
-            vec![(targets[0], encode(targets[0]))]
-        } else {
-            thread::scope(|scope| {
-                let handles: Vec<_> = targets.iter().map(|t| (*t, scope.spawn(move || encode(*t)))).collect();
-                handles.into_iter().map(|(t, h)| (t, h.join().ok().flatten())).collect()
-            })
-        };
-        let mut sizes = stream.sizes.lock().unwrap();
-        for (sub, target) in wanted {
-            if let Some((_, Some(e))) = encoded.iter().find(|(t, _)| *t == target) {
-                sub.video(e.clone());
+        if let Some(out) = out {
+            let mut sizes = stream.sizes.lock().unwrap();
+            for (sub, target, e) in out {
+                sub.video(e);
                 sizes.insert(sub.id(), target);
             }
+            let mut st = stream.status.lock().unwrap();
+            st.encode_ms = if st.encode_ms == 0.0 { ms } else { st.encode_ms * 0.9 + ms * 0.1 };
         }
-        drop(sizes);
-        let ms = started.elapsed().as_secs_f64() * 1000.0;
-        let mut st = stream.status.lock().unwrap();
-        st.encode_ms = if st.encode_ms == 0.0 { ms } else { st.encode_ms * 0.9 + ms * 0.1 };
+        *delivered = seq + 1;
+        drop(delivered);
+        stream.delivered_cv.notify_all();
     }
+}
+
+type Deliveries = Vec<(Arc<dyn Subscriber>, (u32, u32), Arc<Encoded>)>;
+
+/// The pictures for one frame, per viewer; None if nobody wants video or
+/// the frame couldn't be read.
+fn encode_frame(stream: &Stream, frame: VideoFrame, native_bgra: &mut Bgra) -> Option<Deliveries> {
+    let subs: Vec<Arc<dyn Subscriber>> = stream.subscribers.lock().unwrap().iter().filter(|s| s.want().video).cloned().collect();
+    if subs.is_empty() {
+        return None;
+    }
+    // Viewer → target size, at most MAX_PIPELINES distinct.
+    let mut wanted: Vec<(Arc<dyn Subscriber>, (u32, u32))> = subs
+        .into_iter()
+        .map(|s| {
+            let w = s.want();
+            let size = scale::size_for(frame.width, frame.height, w.max_width, w.max_height);
+            (s, size)
+        })
+        .collect();
+    let mut targets: Vec<(u32, u32)> = wanted.iter().map(|(_, t)| *t).collect();
+    targets.sort_by(|a, b| (b.0 * b.1).cmp(&(a.0 * a.1)));
+    targets.dedup();
+    if targets.len() > MAX_PIPELINES {
+        let kept = targets[..MAX_PIPELINES].to_vec();
+        for (_, t) in wanted.iter_mut() {
+            if !kept.contains(t) {
+                // The largest kept size that fits, else the smallest kept.
+                *t = kept.iter().copied().find(|k| k.0 <= t.0 && k.1 <= t.1).unwrap_or(*kept.last().unwrap());
+            }
+        }
+        targets = kept;
+    }
+
+    let native = (frame.width, frame.height);
+    let needs_pixels = targets.iter().any(|t| *t != native) || frame.format != PixelFormat::Mjpeg;
+    if needs_pixels {
+        let ok = match frame.format {
+            PixelFormat::Mjpeg => jpeg::decode(&frame.data, native_bgra).map_err(|e| e.to_string()),
+            PixelFormat::Nv12 => {
+                convert::nv12_to_bgra(&frame.data, frame.width, frame.height, frame.stride, native_bgra);
+                Ok(())
+            }
+            PixelFormat::Yuy2 => {
+                convert::yuy2_to_bgra(&frame.data, frame.width, frame.height, frame.stride, native_bgra);
+                Ok(())
+            }
+            PixelFormat::Bgra => {
+                *native_bgra = Bgra { width: frame.width, height: frame.height, stride: frame.stride, data: frame.data.clone() };
+                Ok(())
+            }
+        };
+        if let Err(e) = ok {
+            log(&format!("stream '{}': {e}", stream.config.name));
+            return None;
+        }
+    }
+    let native_bgra = &*native_bgra;
+    let quality = stream.config.quality.clamp(1, 100);
+    let encode = |target: (u32, u32)| -> Option<Arc<Encoded>> {
+        let data = if target == native && frame.format == PixelFormat::Mjpeg {
+            frame.data.clone()
+        } else {
+            let mut out = Vec::new();
+            let result = if target == native {
+                jpeg::encode(native_bgra, quality, &mut out)
+            } else {
+                let mut scaled = Bgra::default();
+                scale::scale(native_bgra, target.0, target.1, &mut scaled);
+                jpeg::encode(&scaled, quality, &mut out)
+            };
+            if let Err(e) = result {
+                log(&format!("stream '{}': {e}", stream.config.name));
+                return None;
+            }
+            out
+        };
+        Some(Arc::new(Encoded { codec: Codec::Jpeg, width: target.0, height: target.1, data, timestamp: frame.timestamp }))
+    };
+    let encoded: Vec<((u32, u32), Option<Arc<Encoded>>)> = if targets.len() == 1 {
+        vec![(targets[0], encode(targets[0]))]
+    } else {
+        thread::scope(|scope| {
+            let handles: Vec<_> = targets.iter().map(|t| (*t, scope.spawn(move || encode(*t)))).collect();
+            handles.into_iter().map(|(t, h)| (t, h.join().ok().flatten())).collect()
+        })
+    };
+    Some(
+        wanted
+            .into_iter()
+            .filter_map(|(sub, target)| match encoded.iter().find(|(t, _)| *t == target) {
+                Some((_, Some(e))) => Some((sub, target, e.clone())),
+                _ => None,
+            })
+            .collect(),
+    )
 }
 
 fn audio_loop(stream: Arc<Stream>) {

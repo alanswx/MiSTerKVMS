@@ -108,11 +108,28 @@
     <div class="actions"><button id="refresh">Look for cards again</button></div>
   </section>
 
+  <section id="bgSection" hidden>
+    <h2>Run in the background</h2>
+    <div class="settings">
+      <div class="row" id="svcStatus"></div>
+      <span class="hint" id="svcHint"></span>
+      <div class="actions">
+        <button class="primary" id="svcInstall" hidden>Install &amp; start service</button>
+        <button class="primary" id="svcStart" hidden>Start service</button>
+        <button id="svcRestart" hidden>Restart</button>
+        <button id="svcStop" hidden>Stop</button>
+        <button class="danger" id="svcUninstall" hidden>Uninstall</button>
+      </div>
+    </div>
+  </section>
+
   <section>
     <h2>Settings</h2>
     <div class="settings">
       <label class="check"><input type="checkbox" id="allowLan"> Open this page from other computers</label>
-      <span class="hint">Off: only this PC can open it. Viewers can always connect to the streams.</span>
+      <label class="check"><input type="checkbox" id="testPattern"> Show a test pattern</label>
+      <span class="hint">Adds “Test pattern” to the capture cards: moving rainbow bars and a beep every second. Add it as a stream to try viewers, sound and the network without a MiSTer.</span>
+      <span class="hint" id="allowLanHint">Off: only this PC can open it. Viewers can always connect to the streams.</span>
       <div class="inline">
         <label>Setup password (optional) <input id="password" type="password" autocomplete="new-password" placeholder="none"></label>
         <button type="button" id="savePassword">Set</button>
@@ -162,6 +179,7 @@ async function loadState() {
   state = await api("/api/state");
   $("server").textContent = `${state.server} · viewers connect on port ${state.port}`;
   $("allowLan").checked = state.allowLan;
+  $("testPattern").checked = state.testPattern;
   $("password").placeholder = state.passwordSet ? "set (type to change, blank to remove)" : "none";
   $("iniPath").textContent = state.configDir + (state.configDir.includes("\\") ? "\\" : "/") + "capture.ini";
   renderStreams();
@@ -421,6 +439,10 @@ $("allowLan").onchange = async () => {
   try { await api("/api/settings", { allowLan: $("allowLan").checked }); toast("Saved"); }
   catch (e) { $("allowLan").checked = !$("allowLan").checked; if (e.message !== "cancelled") toast(e.message); }
 };
+$("testPattern").onchange = async () => {
+  try { await api("/api/settings", { testPattern: $("testPattern").checked }); await loadDevices(); toast("Saved"); }
+  catch (e) { $("testPattern").checked = !$("testPattern").checked; if (e.message !== "cancelled") toast(e.message); }
+};
 $("savePassword").onclick = async () => {
   const pw = $("password").value;
   try {
@@ -432,10 +454,101 @@ $("savePassword").onclick = async () => {
   } catch (e) { if (e.message !== "cancelled") toast(e.message); }
 };
 
+// Run in the background: the Windows service.
+let service = null, svcBusy = "";
+
+async function loadService() {
+  const r = await fetch("/api/service").then(r => r.json());
+  service = r.service;
+  service.local = r.local;
+  renderService();
+}
+
+function renderService() {
+  const s = service;
+  if (!s || !s.supported) { $("bgSection").hidden = true; return; }
+  $("bgSection").hidden = false;
+  const show = (id, on) => { $(id).hidden = !on; $(id).disabled = !s.local || !!svcBusy; };
+  let status, hint;
+  if (svcBusy) {
+    status = `<span class="warn"><span class="dot warn"></span>${esc(svcBusy)}</span>`;
+    hint = "";
+  } else if (s.thisIsService) {
+    status = `<span class="ok"><span class="dot ok"></span>Running as a service: starts when the PC starts, no need to log in.</span>`;
+    hint = `Runs <code>${esc(s.exe)}</code>: keep it there.`;
+  } else if (s.installed) {
+    status = `<span class="warn"><span class="dot warn"></span>Running in this window. The service is installed but ${esc(s.state || "not running")}.</span>`;
+    hint = "Start it and this window hands over and closes.";
+  } else {
+    status = `<span class="warn"><span class="dot warn"></span>Running in this window: closing it stops the streams.</span>`;
+    hint = "Install it as a Windows service to keep the streams running, also after a restart, without logging in. Windows asks for permission; this window then hands over and closes.";
+  }
+  if (!s.local) hint = "This can only be changed on the capture PC itself.";
+  $("svcStatus").innerHTML = status;
+  $("svcHint").innerHTML = hint;
+  show("svcInstall", !s.installed);
+  show("svcStart", s.installed && !s.thisIsService);
+  show("svcRestart", s.thisIsService);
+  show("svcStop", s.thisIsService);
+  show("svcUninstall", s.installed);
+  $("allowLan").disabled = !s.local;
+  if (!s.local) $("allowLanHint").textContent = "This can only be changed on the capture PC itself.";
+}
+
+/// Wait for the page to answer again (after a handover or restart).
+async function reconnect(wantService) {
+  for (let i = 0; i < 90; i++) {
+    await new Promise(r => setTimeout(r, 1000));
+    try {
+      await loadService();
+      if (!wantService || service.thisIsService) return true;
+    } catch {}
+  }
+  return false;
+}
+
+async function serviceAction(action, busy) {
+  const s = service;
+  if (s.thisIsService && (action === "stop" || action === "uninstall") &&
+      !confirm("This stops the streams, and this page, until you start misterkvms-capture.exe again. Continue?")) return;
+  if (!s.thisIsService && s.installed && action === "uninstall" &&
+      !confirm("Remove the Windows service? This window keeps running.")) return;
+  svcBusy = busy; renderService();
+  try {
+    const r = await api("/api/service", { action });
+    const goesAway = s.thisIsService ? action !== "status" : r.handover;
+    if (s.thisIsService && (action === "stop" || action === "uninstall")) {
+      svcBusy = action === "stop" ? "Service stopped. Double-click misterkvms-capture.exe to start it again." : "Service removed. Double-click misterkvms-capture.exe to run it again.";
+      renderService();
+      return;
+    }
+    if (goesAway) {
+      const ok = await reconnect(action !== "uninstall");
+      svcBusy = "";
+      if (ok) { await loadState(); toast(action === "restart" ? "Restarted" : "Now running as a service"); }
+      else svcBusy = "The service didn't come back: see capture.log in " + (state ? state.configDir : "the config folder");
+    } else {
+      svcBusy = "";
+      await loadService();
+      toast("Done");
+    }
+  } catch (e) {
+    svcBusy = "";
+    if (e.message !== "cancelled") toast(e.message);
+  }
+  renderService();
+}
+
+$("svcInstall").onclick = () => serviceAction("install", "Installing… answer the Windows prompt.");
+$("svcStart").onclick = () => serviceAction("start", "Starting the service… answer the Windows prompt.");
+$("svcRestart").onclick = () => serviceAction("restart", "Restarting…");
+$("svcStop").onclick = () => serviceAction("stop", "Stopping…");
+$("svcUninstall").onclick = () => serviceAction("uninstall", "Removing the service…");
+
 (async () => {
-  try { await loadState(); await loadDevices(); }
+  try { await loadState(); await loadDevices(); await loadService(); }
   catch (e) { toast("Can't reach the capture server: " + e.message); }
-  setInterval(() => loadState().catch(() => {}), 2000);
+  setInterval(() => { if (!svcBusy) { loadState().catch(() => {}); loadService().catch(() => {}); } }, 2000);
 })();
 </script>
 </body>

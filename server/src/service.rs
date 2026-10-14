@@ -160,7 +160,12 @@ mod win {
             st.state = state_name(s.current_state).into();
         }
         if let Ok(c) = service.query_config() {
-            st.exe = c.executable_path.display().to_string();
+            // The SCM keeps the whole command line: show just the program.
+            let line = c.executable_path.display().to_string();
+            st.exe = match line.to_lowercase().find(".exe") {
+                Some(i) => line[..i + 4].trim_matches('"').to_string(),
+                None => line,
+            };
         }
         st
     }

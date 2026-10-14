@@ -146,6 +146,9 @@ impl Server {
 fn main() {
     let cli = Cli::parse();
     let dir = cli.config.unwrap_or_else(config::dir);
+    if matches!(cli.cmd, Some(Cmd::Devices | Cmd::Add { .. })) {
+        kvms_capture::set_test_pattern(config::load_settings(&dir).test_pattern);
+    }
     let result = match cli.cmd.unwrap_or(Cmd::Serve { service: false }) {
         Cmd::Serve { service: true } => service::run(dir),
         Cmd::Serve { service: false } => serve(dir, false),
@@ -196,6 +199,7 @@ pub fn serve(dir: PathBuf, as_service: bool) -> Result<(), String> {
     }
     log(&format!("{} (config {})", server_name(), dir.display()));
     service::no_throttling();
+    kvms_capture::set_test_pattern(settings.test_pattern);
     let server = Arc::new(Server {
         dir: dir.clone(),
         settings: Mutex::new(settings.clone()),

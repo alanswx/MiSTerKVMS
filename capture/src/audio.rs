@@ -46,6 +46,9 @@ pub fn audio_devices() -> Vec<AudioDevice> {
     };
     #[cfg(windows)]
     list.extend(crate::ds::audio_devices());
+    if crate::pattern::listed() {
+        list.push(crate::pattern::audio_device());
+    }
     list
 }
 
@@ -69,7 +72,6 @@ pub struct AudioCapture {
 
 impl AudioCapture {
     /// Audio fed by a video backend (a card's own audio pin).
-    #[cfg_attr(not(windows), allow(dead_code))]
     pub(crate) fn from_channel(rx: Receiver<Result<AudioChunk, CaptureError>>, stop: Arc<AtomicBool>, channels: u16, rate: u32) -> Self {
         Self { rx, stop, channels, rate }
     }
