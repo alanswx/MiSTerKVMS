@@ -23,6 +23,8 @@ serde_json = "1"
 mkvm = { path = "../mkvm" }
 kvms-codec = { path = "../codec" }
 kvms-capture = { path = "../capture" }
+mdns-sd = "0.13"
+if-addrs = "0.13"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = [

@@ -1496,6 +1496,7 @@ dependencies = [
  "clap",
  "kvms-codec",
  "kvms-core",
+ "memory-stats",
  "mkvm",
  "png",
  "serde",
@@ -1518,9 +1519,11 @@ version = "0.9.0"
 dependencies = [
  "bytemuck",
  "cpal",
+ "if-addrs",
  "kvms-capture",
  "kvms-codec",
  "libloading 0.9.0",
+ "mdns-sd",
  "mkvm",
  "pollster",
  "raw-window-handle",
@@ -1675,6 +1678,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "488016bfae457b036d996092f6cb448677611ce4449e970ceaf42695203f218a"
 dependencies = [
  "autocfg",
+]
+
+[[package]]
+name = "memory-stats"
+version = "1.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c73f5c649995a115e1a0220b35e4df0a1294500477f97a91d0660fb5abeb574a"
+dependencies = [
+ "libc",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]

@@ -5,6 +5,7 @@
 
 mod media;
 mod settings;
+mod soak;
 mod stream;
 
 use std::collections::HashMap;
@@ -125,6 +126,31 @@ enum Cmd {
         #[arg(long)]
         save: Option<PathBuf>,
     },
+    /// List capture server streams found on the network.
+    Streams {
+        #[arg(long, default_value = "2s")]
+        wait: String,
+    },
+    /// Run a full app session (offscreen) and watch memory; fails if it keeps
+    /// growing. One source: --stream, --local or --ndi.
+    Soak {
+        /// e.g. 10m, 8h
+        duration: String,
+        /// Capture server stream (mkvm://host/stream).
+        #[arg(long)]
+        stream: Option<String>,
+        /// Capture card on this computer (id or name; test:pattern works).
+        #[arg(long)]
+        local: Option<String>,
+        /// NDI source name.
+        #[arg(long)]
+        ndi: Option<String>,
+        #[arg(long, default_value = "10s")]
+        every: String,
+        /// Allowed growth after warm-up, MB.
+        #[arg(long, default_value_t = 50.0)]
+        limit_mb: f64,
+    },
     /// Copy a core (.rbf) to the MiSTer over SSH and load it.
     LoadCore {
         rbf: PathBuf,
@@ -198,6 +224,14 @@ fn run(cli: Cli) -> Result<Value, String> {
                 None => None,
             };
             stream::watch(&address, duration(&d)?, max, save.as_deref())
+        }
+        Cmd::Streams { wait } => {
+            let found = kvms_core::discover::find_streams(duration(&wait)?.as_millis() as u32);
+            Ok(json!({ "streams": found }))
+        }
+        Cmd::Soak { duration: d, stream, local, ndi, every, limit_mb } => {
+            let source = soak::SoakSource { stream, local, ndi };
+            soak::soak(source, duration(&d)?, duration(&every)?, limit_mb)
         }
         Cmd::Status => status(&s),
         Cmd::Machines => Ok(json!({

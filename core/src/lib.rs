@@ -4,6 +4,7 @@ uniffi::setup_scaffolding!();
 
 pub mod capi;
 pub mod controller;
+pub mod discover;
 pub mod input;
 pub mod keymap;
 pub mod link;
