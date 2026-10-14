@@ -230,7 +230,7 @@ function renderDevices() {
       <div class="shot" id="dev-${btoa(unescape(encodeURIComponent(d.id))).replace(/[^a-z0-9]/gi, "")}"><div class="msg">${stream ? `Shown above as “${esc(stream.config.name)}”` : `<button data-preview="${esc(d.id)}">Show picture</button>`}</div></div>
       <div class="body">
         <div class="title">${esc(d.name)}${stream ? "" : `<button class="primary" data-use="${esc(d.id)}">Add as stream</button>`}</div>
-        <div class="row"><span>${d.formats.length ? `best: ${fmt(d.best)}` : `<span class="warn">formats unavailable (in use by another app?)</span>`}</span></div>
+        <div class="row"><span>${d.formats.length ? `best: ${fmt(d.best)}` : `<span class="warn">no formats: in use by another app, or a card Windows Media Foundation can't open (some AVerMedia cards)</span>`}</span></div>
         <div class="row"><span>audio: ${esc(d.audio || "none found")}</span></div>
       </div></div>`;
   }).join("");

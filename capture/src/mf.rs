@@ -1,13 +1,12 @@
 //! Windows: Media Foundation. Devices through `MFEnumDeviceSources`, frames
-//! through a synchronous `IMFSourceReader` on its own thread.
+//! through an `IMFSourceReader` in async mode (a callback per frame).
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender};
-use std::sync::Arc;
-use std::thread::{self, JoinHandle};
+use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 
-use windows::core::{Interface, GUID, PWSTR};
+use windows::core::{implement, Interface, Ref, GUID, HRESULT, PWSTR};
 use windows::Win32::Foundation::E_ACCESSDENIED;
 use windows::Win32::Media::MediaFoundation::*;
 use windows::Win32::System::Com::{CoInitializeEx, CoTaskMemFree, COINIT_MULTITHREADED};
@@ -167,49 +166,99 @@ pub fn devices() -> Result<Vec<VideoDevice>, CaptureError> {
     Ok(out)
 }
 
-/// The media source, shut down from another thread to unblock `ReadSample`.
-struct SendSource(IMFMediaSource);
-// SAFETY: Media Foundation sources are free-threaded; Shutdown may be called
-// from any thread.
-unsafe impl Send for SendSource {}
-
 type FrameResult = Result<VideoFrame, CaptureError>;
+
+/// What the reader's callback shares with `Reader`.
+struct CallbackState {
+    tx: SyncSender<FrameResult>,
+    stop: AtomicBool,
+    /// Taken out when closing, so the callback stops asking for frames.
+    reader: Mutex<Option<IMFSourceReader>>,
+    clock: Mutex<DeviceClock>,
+    output: Output,
+    flushed: (Mutex<bool>, Condvar),
+}
+
+/// Media Foundation calls this on its own threads with each frame (async
+/// mode). Unlike a blocking ReadSample, nothing waits forever when a card
+/// stops sending: closing is a Flush.
+#[implement(IMFSourceReaderCallback)]
+struct Callback(Arc<CallbackState>);
+
+impl IMFSourceReaderCallback_Impl for Callback_Impl {
+    fn OnReadSample(&self, hrstatus: HRESULT, _stream: u32, flags: u32, timestamp: i64, sample: Ref<IMFSample>) -> windows::core::Result<()> {
+        let st = &self.0;
+        if st.stop.load(Ordering::Relaxed) {
+            return Ok(());
+        }
+        let reader = st.reader.lock().unwrap().clone();
+        let Some(reader) = reader else { return Ok(()) };
+        let result = if hrstatus.is_err() {
+            Err(err("ReadSample", windows::core::Error::from(hrstatus)))
+        } else if flags & MF_SOURCE_READERF_ERROR.0 as u32 != 0 {
+            Err(CaptureError::Lost("stream error".into()))
+        } else if flags & MF_SOURCE_READERF_ENDOFSTREAM.0 as u32 != 0 {
+            Err(CaptureError::Lost("end of stream".into()))
+        } else {
+            match sample.as_ref() {
+                Some(sample) => unsafe { frame_from(&reader, sample, timestamp, st.output, &mut st.clock.lock().unwrap()) }.map(Some),
+                None => Ok(None),
+            }
+        };
+        match result {
+            Ok(Some(frame)) => {
+                // The consumer wants the newest frame; if it's behind, drop.
+                let _ = st.tx.try_send(Ok(frame));
+            }
+            Ok(None) => {}
+            Err(e) => {
+                let _ = st.tx.try_send(Err(e));
+                return Ok(());
+            }
+        }
+        unsafe {
+            let _ = reader.ReadSample(VIDEO_STREAM, 0, None, None, None, None);
+        }
+        Ok(())
+    }
+
+    fn OnFlush(&self, _stream: u32) -> windows::core::Result<()> {
+        let (lock, cv) = &self.0.flushed;
+        *lock.lock().unwrap() = true;
+        cv.notify_all();
+        Ok(())
+    }
+
+    fn OnEvent(&self, _stream: u32, _event: Ref<IMFMediaEvent>) -> windows::core::Result<()> {
+        Ok(())
+    }
+}
 
 pub struct Reader {
     rx: Receiver<FrameResult>,
-    stop: Arc<AtomicBool>,
-    source: SendSource,
-    thread: Option<JoinHandle<()>>,
+    state: Arc<CallbackState>,
+    source: IMFMediaSource,
 }
 
 impl Reader {
     pub fn open(id: &str, wanted: Option<VideoFormat>, output: Output) -> Result<(Self, VideoFormat), CaptureError> {
-        let (ready_tx, ready_rx) = mpsc::channel();
-        // Two frames of slack: the consumer only ever wants the newest.
-        let (tx, rx) = mpsc::sync_channel(2);
-        let stop = Arc::new(AtomicBool::new(false));
-        let thread_stop = stop.clone();
-        let id = id.to_string();
-        let thread = thread::Builder::new()
-            .name("capture-video".into())
-            .spawn(move || match setup(&id, wanted, output) {
-                Ok((reader, source, format)) => {
-                    let _ = ready_tx.send(Ok((SendSource(source), format)));
-                    read_loop(reader, output, tx, thread_stop);
-                }
-                Err(e) => {
-                    let _ = ready_tx.send(Err(e));
-                }
-            })
-            .map_err(|e| CaptureError::Other(e.to_string()))?;
-        match ready_rx.recv() {
-            Ok(Ok((source, format))) => Ok((Self { rx, stop, source, thread: Some(thread) }, format)),
-            Ok(Err(e)) => {
-                let _ = thread.join();
-                Err(e)
-            }
-            Err(e) => Err(CaptureError::Other(e.to_string())),
+        // A few frames of slack: the consumer only ever wants the newest.
+        let (tx, rx) = mpsc::sync_channel(3);
+        let state = Arc::new(CallbackState {
+            tx,
+            stop: AtomicBool::new(false),
+            reader: Mutex::new(None),
+            clock: Mutex::new(DeviceClock::default()),
+            output,
+            flushed: (Mutex::new(false), Condvar::new()),
+        });
+        let callback: IMFSourceReaderCallback = Callback(state.clone()).into();
+        let (reader, source, format) = setup(id, wanted, output, &callback)?;
+        *state.reader.lock().unwrap() = Some(reader.clone());
+        unsafe {
+            reader.ReadSample(VIDEO_STREAM, 0, None, None, None, None).map_err(|e| err("ReadSample", e))?;
         }
+        Ok((Self { rx, state, source }, format))
     }
 
     pub fn next_frame(&mut self, timeout: Duration) -> Result<Option<VideoFrame>, CaptureError> {
@@ -223,20 +272,32 @@ impl Reader {
 
 impl Drop for Reader {
     fn drop(&mut self) {
-        self.stop.store(true, Ordering::Relaxed);
-        // Unblocks a ReadSample waiting for a frame that won't come.
-        unsafe {
-            let _ = self.source.0.Shutdown();
+        let _ = init();
+        self.state.stop.store(true, Ordering::Relaxed);
+        let reader = self.state.reader.lock().unwrap().take();
+        if let Some(reader) = reader {
+            unsafe {
+                // Cancels the pending read; OnFlush follows.
+                if reader.Flush(MF_SOURCE_READER_ALL_STREAMS.0 as u32).is_ok() {
+                    let (lock, cv) = &self.state.flushed;
+                    let done = lock.lock().unwrap();
+                    let _ = cv.wait_timeout_while(done, Duration::from_secs(2), |d| !*d);
+                }
+            }
+            drop(reader);
         }
-        // Drain so a blocked send can finish.
-        while self.rx.try_recv().is_ok() {}
-        if let Some(t) = self.thread.take() {
-            let _ = t.join();
+        unsafe {
+            let _ = self.source.Shutdown();
         }
     }
 }
 
-fn setup(id: &str, wanted: Option<VideoFormat>, output: Output) -> Result<(IMFSourceReader, IMFMediaSource, VideoFormat), CaptureError> {
+fn setup(
+    id: &str,
+    wanted: Option<VideoFormat>,
+    output: Output,
+    callback: &IMFSourceReaderCallback,
+) -> Result<(IMFSourceReader, IMFMediaSource, VideoFormat), CaptureError> {
     init()?;
     let all = activates()?;
     let activate = all
@@ -263,6 +324,7 @@ fn setup(id: &str, wanted: Option<VideoFormat>, output: Output) -> Result<(IMFSo
         MFCreateAttributes(&mut attrs, 3).map_err(|e| err("MFCreateAttributes", e))?;
         let attrs = attrs.unwrap();
         attrs.SetUINT32(&MF_LOW_LATENCY, 1).ok();
+        attrs.SetUnknown(&MF_SOURCE_READER_ASYNC_CALLBACK, callback).map_err(|e| err("async callback", e))?;
         if output == Output::Bgra && format.pixel != PixelFormat::Bgra {
             // Lets the reader insert the MJPEG decoder and colour converter.
             attrs.SetUINT32(&MF_SOURCE_READER_ENABLE_ADVANCED_VIDEO_PROCESSING, 1).ok();
@@ -283,45 +345,13 @@ fn setup(id: &str, wanted: Option<VideoFormat>, output: Output) -> Result<(IMFSo
     }
 }
 
-fn read_loop(reader: IMFSourceReader, output: Output, tx: SyncSender<FrameResult>, stop: Arc<AtomicBool>) {
-    let mut clock = DeviceClock::default();
-    while !stop.load(Ordering::Relaxed) {
-        let frame = unsafe { read_one(&reader, output, &mut clock) };
-        let fatal = frame.is_err();
-        match frame {
-            Ok(None) => continue,
-            Ok(Some(f)) => {
-                if tx.send(Ok(f)).is_err() {
-                    return;
-                }
-            }
-            Err(e) => {
-                if !stop.load(Ordering::Relaxed) {
-                    let _ = tx.send(Err(e));
-                }
-            }
-        }
-        if fatal {
-            return;
-        }
-    }
-}
-
-unsafe fn read_one(reader: &IMFSourceReader, output: Output, clock: &mut DeviceClock) -> Result<Option<VideoFrame>, CaptureError> {
-    let mut stream = 0u32;
-    let mut flags = 0u32;
-    let mut ts = 0i64;
-    let mut sample = None;
-    reader
-        .ReadSample(VIDEO_STREAM, 0, Some(&mut stream), Some(&mut flags), Some(&mut ts), Some(&mut sample))
-        .map_err(|e| err("ReadSample", e))?;
-    if flags & MF_SOURCE_READERF_ERROR.0 as u32 != 0 {
-        return Err(CaptureError::Lost("stream error".into()));
-    }
-    if flags & MF_SOURCE_READERF_ENDOFSTREAM.0 as u32 != 0 {
-        return Err(CaptureError::Lost("end of stream".into()));
-    }
-    let Some(sample) = sample else { return Ok(None) };
+unsafe fn frame_from(
+    reader: &IMFSourceReader,
+    sample: &IMFSample,
+    ts: i64,
+    output: Output,
+    clock: &mut DeviceClock,
+) -> Result<VideoFrame, CaptureError> {
     let current = reader.GetCurrentMediaType(VIDEO_STREAM).map_err(|e| err("GetCurrentMediaType", e))?;
     let format = video_format(&current).ok_or_else(|| CaptureError::Format("unknown output type".into()))?;
     let buffer = sample.ConvertToContiguousBuffer().map_err(|e| err("ConvertToContiguousBuffer", e))?;
@@ -337,7 +367,7 @@ unsafe fn read_one(reader: &IMFSourceReader, output: Output, clock: &mut DeviceC
         let _ = buffer.Unlock();
         (data, 0)
     };
-    Ok(Some(VideoFrame { format: format.pixel, width: format.width, height: format.height, stride, data, timestamp }))
+    Ok(VideoFrame { format: format.pixel, width: format.width, height: format.height, stride, data, timestamp })
 }
 
 /// Copy an uncompressed picture top row first, whatever the buffer's pitch

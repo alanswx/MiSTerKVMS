@@ -72,27 +72,50 @@ pub fn find_streams(wait_ms: u32) -> Vec<FoundStream> {
     found
 }
 
-/// This computer's IPv4 addresses and netmasks.
-fn local_networks() -> Vec<(Ipv4Addr, Ipv4Addr)> {
+/// One of this computer's IPv4 networks.
+struct LocalNet {
+    ip: Ipv4Addr,
+    mask: Ipv4Addr,
+    /// WSL, Hyper-V, Docker, VMware, VirtualBox...: networks that exist on
+    /// many machines with the same numbers but don't connect them.
+    is_virtual: bool,
+}
+
+fn local_networks() -> Vec<LocalNet> {
     if_addrs::get_if_addrs()
         .unwrap_or_default()
         .into_iter()
         .filter_map(|i| match i.addr {
-            if_addrs::IfAddr::V4(v4) if !v4.ip.is_loopback() => Some((v4.ip, v4.netmask)),
+            if_addrs::IfAddr::V4(v4) if !v4.ip.is_loopback() => {
+                Some(LocalNet { ip: v4.ip, mask: v4.netmask, is_virtual: virtual_adapter(&i.name) })
+            }
             _ => None,
         })
         .collect()
 }
 
-/// The address on one of our own subnets; else loopback (server on this
-/// computer); else a private address; else any.
-fn best_address(ips: &[Ipv4Addr], local: &[(Ipv4Addr, Ipv4Addr)]) -> Option<Ipv4Addr> {
-    let same_subnet = |ip: &Ipv4Addr| {
-        local.iter().any(|(mine, mask)| u32::from(*ip) & u32::from(*mask) == u32::from(*mine) & u32::from(*mask))
+fn virtual_adapter(name: &str) -> bool {
+    let n = name.to_lowercase();
+    ["vethernet", "wsl", "hyper-v", "docker", "vmware", "vmnet", "virtualbox", "vboxnet", "virbr", "br-", "veth", "utun", "zerotier"]
+        .iter()
+        .any(|v| n.contains(v))
+}
+
+/// Which of a server's addresses to use: the server itself (this computer)
+/// over loopback; else one on a real network we share; else a shared
+/// virtual network; else a private address; else any.
+fn best_address(ips: &[Ipv4Addr], local: &[LocalNet]) -> Option<Ipv4Addr> {
+    // Virtual adapters reuse the same addresses on every machine (Docker's
+    // 172.17.0.1), so only a real one proves the server is this computer.
+    if ips.iter().any(|ip| local.iter().any(|n| !n.is_virtual && n.ip == *ip)) {
+        return Some(Ipv4Addr::LOCALHOST);
+    }
+    let shared = |ip: &Ipv4Addr, want_virtual: bool| {
+        local.iter().any(|n| n.is_virtual == want_virtual && u32::from(*ip) & u32::from(n.mask) == u32::from(n.ip) & u32::from(n.mask))
     };
     ips.iter()
-        .find(|ip| same_subnet(ip))
-        .or_else(|| ips.iter().find(|ip| local.iter().any(|(mine, _)| mine == *ip)))
+        .find(|ip| shared(ip, false))
+        .or_else(|| ips.iter().find(|ip| shared(ip, true)))
         .or_else(|| ips.iter().find(|ip| ip.is_private()))
         .or_else(|| ips.first())
         .copied()
@@ -137,11 +160,19 @@ mod tests {
     use super::*;
 
     #[test]
-    fn picks_the_address_on_our_subnet() {
-        let local = [(Ipv4Addr::new(192, 168, 1, 20), Ipv4Addr::new(255, 255, 255, 0))];
-        let ips = [Ipv4Addr::new(172, 19, 0, 1), Ipv4Addr::new(192, 168, 1, 7), Ipv4Addr::new(192, 168, 99, 82)];
-        assert_eq!(best_address(&ips, &local), Some(Ipv4Addr::new(192, 168, 1, 7)));
-        assert_eq!(best_address(&ips[..1], &local), Some(Ipv4Addr::new(172, 19, 0, 1)));
+    fn picks_a_reachable_address() {
+        let net = |ip: [u8; 4], mask: [u8; 4], is_virtual| LocalNet { ip: ip.into(), mask: mask.into(), is_virtual };
+        let local = [net([192, 168, 1, 20], [255, 255, 255, 0], false), net([172, 17, 0, 1], [255, 255, 0, 0], true)];
+        let docker: Ipv4Addr = [172, 17, 0, 1].into();
+        let lan: Ipv4Addr = [192, 168, 1, 7].into();
+        let other: Ipv4Addr = [10, 9, 0, 3].into();
+        // The LAN beats a Docker network both machines happen to have.
+        assert_eq!(best_address(&[docker, other, lan], &local), Some(lan));
+        assert_eq!(best_address(&[other], &local), Some(other));
+        // This computer's own address: loopback.
+        assert_eq!(best_address(&[[192, 168, 1, 20].into()], &local), Some(Ipv4Addr::LOCALHOST));
         assert_eq!(best_address(&[], &local), None);
+        assert!(virtual_adapter("vEthernet (WSL (Hyper-V firewall))"));
+        assert!(!virtual_adapter("Ethernet 2"));
     }
 }
