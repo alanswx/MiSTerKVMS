@@ -69,6 +69,10 @@ public sealed partial class MainWindow : Window
                 // the user is looking at this window.
                 if (GetForegroundWindow() == _hwnd) StartCapture();
                 break;
+            case "releaseRequested":
+                // The connection went down, or another viewer took control.
+                Render();
+                break;
         }
     }
 
@@ -94,7 +98,7 @@ public sealed partial class MainWindow : Window
         bool videoUp = s.VideoStats?.State == "connected";
 
         Title = profile == null ? "MiSTerKVMS"
-            : $"{profile.Name} · {(s.CoreRunning.Length > 0 ? s.CoreRunning : profile.MisterHost)} — MiSTerKVMS";
+            : $"{profile.Name} · {(s.CoreRunning.Length > 0 ? s.CoreRunning : profile.Subtitle)} — MiSTerKVMS";
 
         // Toolbar
         Toolbar.IsEnabled = open;
@@ -120,6 +124,16 @@ public sealed partial class MainWindow : Window
         MuteButton.IsChecked = s.Muted;
         MuteIcon.Glyph = s.Muted ? "" : "";
         PinStatsButton.IsChecked = s.StatsPinned;
+        bool stream = profile?.SourceKind == "capture";
+        QualityButton.Visibility = stream ? Visibility.Visible : Visibility.Collapsed;
+        if (profile != null)
+        {
+            QualityAuto.IsChecked = profile.Quality is "auto" or "";
+            QualityBest.IsChecked = profile.Quality == "best";
+            QualityBalanced.IsChecked = profile.Quality == "balanced";
+            QualityLow.IsChecked = profile.Quality == "low";
+        }
+        RenderControl(s);
         ShowRecordingButton.IsEnabled = s.LastRecording != null;
 
         RenderPlaceholder(profile, s, videoUp);
@@ -139,6 +153,30 @@ public sealed partial class MainWindow : Window
             return;
         }
         PlaceholderIcon.Glyph = "";
+        if (profile.SourceKind == "capture")
+        {
+            PlaceholderTitle.Text = profile.StreamName.Length > 0 ? profile.StreamName : "No stream chosen";
+            PlaceholderDetail.Text = profile.StreamName.Length == 0 ? "Edit the host and choose a MiSTerKVMS Capture stream."
+                : s.Stream is { Connected: false } st && st.Error.Length > 0 ? st.Error
+                : s.VideoStats?.State switch
+                {
+                    null or "connecting" => "Connecting to the capture server…",
+                    "no signal" => "The capture card has no picture. Is the MiSTer on?",
+                    var other => other,
+                };
+            return;
+        }
+        if (profile.SourceKind == "local")
+        {
+            PlaceholderTitle.Text = "Capture card on this PC";
+            PlaceholderDetail.Text = s.VideoError ?? s.VideoStats?.State switch
+            {
+                null or "opening" or "connecting" => "Opening the capture card…",
+                "no video" => "The capture card has no picture. Is the MiSTer on?",
+                var other => other,
+            };
+            return;
+        }
         if (profile.NdiSource.Length == 0)
         {
             PlaceholderTitle.Text = "No NDI source set";
@@ -168,6 +206,46 @@ public sealed partial class MainWindow : Window
         ? "Not found, and no NDI sources are visible. Is OBS running with its NDI output on?"
         : $"Not found on the network. Visible sources: {string.Join(", ", seen)}. Edit the host to choose one.";
 
+    /// <summary>Capture server streams: who controls the MiSTer.</summary>
+    private void RenderControl(ControllerState s)
+    {
+        ControlBanner.Visibility = s.SomeoneElseInControl ? Visibility.Visible : Visibility.Collapsed;
+        if (s.Stream is not { } st)
+        {
+            ControlText.Text = "";
+            return;
+        }
+        ControlBannerText.Text = $"{st.Holder} has control. Taking it releases their keyboard and mouse.";
+        ControlText.Text = !st.Connected ? ""
+            : st.HaveControl ? "You have control"
+            : st.Holder.Length > 0 ? $"Watching · {st.Holder} has control"
+            : "Watching · click the picture to take control";
+    }
+
+    private void TakeControl_Click(object sender, RoutedEventArgs e)
+    {
+        _core.Call("takeControl");
+        StartCapture(force: true);
+    }
+
+    private void Quality_Click(object sender, RoutedEventArgs e) =>
+        _core.Call("setQuality", new { quality = (string)((FrameworkElement)sender).Tag });
+
+    private async void ViewerName_Click(object sender, RoutedEventArgs e)
+    {
+        var box = new TextBox { Text = _core.Call<string>("viewerName"), Header = "Other people watching a stream see this name" };
+        var dialog = new ContentDialog
+        {
+            XamlRoot = Root.XamlRoot,
+            Title = "Viewer name",
+            Content = box,
+            PrimaryButtonText = "Save",
+            CloseButtonText = "Cancel",
+            DefaultButton = ContentDialogButton.Primary,
+        };
+        if (await dialog.ShowAsync() == ContentDialogResult.Primary) _core.Call("setViewerName", new { name = box.Text });
+    }
+
     private void RenderStats(ControllerState s)
     {
         StatsPanel.Visibility = s.StatsVisible && OpenProfile != null ? Visibility.Visible : Visibility.Collapsed;
@@ -183,6 +261,15 @@ public sealed partial class MainWindow : Window
             lines.Add($"sent   {i.MessagesSent}");
             lines.Add($"queue  {i.Queued}");
         }
+        if (s.Stream is { } st)
+        {
+            lines.Add("");
+            lines.Add("STREAM");
+            lines.Add($"server {(st.Connected ? "connected" : st.Error)}");
+            lines.Add(string.Format(c, "rtt    {0:F1} ms", st.RoundTripMs));
+            lines.Add($"mister {(st.MisterConnected ? st.Mister : "not connected")}");
+            lines.Add($"ctrl   {(st.HaveControl ? "you" : st.Holder.Length > 0 ? st.Holder : "nobody")}");
+        }
         lines.Add("");
         lines.Add("VIDEO");
         if (s.VideoStats is { } v)
@@ -191,7 +278,7 @@ public sealed partial class MainWindow : Window
             lines.Add($"src    {v.SourceWidth}×{v.SourceHeight}");
             lines.Add($"crop   {v.CropWidth}×{v.CropHeight}");
             lines.Add(string.Format(c, "fps    {0:F1} in / {1:F1} drawn", v.ReceivedFps, v.RenderedFps));
-            lines.Add($"drop   {v.DroppedFrames} ndi / {v.SkippedFrames} skipped");
+            lines.Add(OpenProfile?.SourceKind == "ndi" ? $"drop   {v.DroppedFrames} ndi / {v.SkippedFrames} skipped" : $"drop   {v.SkippedFrames} skipped");
             lines.Add($"age    {AgeText(v.FrameAgeMs)}");
             lines.Add(string.Format(c, "audio  {0:F0} ms buf · {1} underruns", v.AudioBufferMs, v.AudioUnderruns));
             if (s.Display.PredictiveCursor)
@@ -209,11 +296,11 @@ public sealed partial class MainWindow : Window
 
     /// <summary>NDI frame age needs the OBS PC's and this PC's clocks to
     /// agree; over a second almost always means they don't.</summary>
-    private static string AgeText(double ms) => ms switch
+    private string AgeText(double ms) => ms switch
     {
         < 0 => "n/a",
         > 1000 => string.Format(CultureInfo.InvariantCulture, "clocks differ (~{0:F1} s)", ms / 1000),
-        _ => string.Format(CultureInfo.InvariantCulture, "≈{0:F0} ms OBS→screen", ms),
+        _ => string.Format(CultureInfo.InvariantCulture, "≈{0:F0} ms {1}→screen", ms, OpenProfile?.SourceKind == "ndi" ? "OBS" : "capture"),
     };
 
     private void RenderStatusBar(ControllerState s)
@@ -298,9 +385,12 @@ public sealed partial class MainWindow : Window
 
     // MARK: Capture
 
-    private void StartCapture()
+    /// <summary>Capture keyboard and mouse. On a stream someone else
+    /// controls, only the Take control button (force) does.</summary>
+    private void StartCapture(bool force = false)
     {
         if (!_state.IsConnected || _state.Capturing) return;
+        if (_state.SomeoneElseInControl && !force) return;
         // The video area in screen pixels; the hidden pointer sits at its centre.
         double scale = Root.XamlRoot.RasterizationScale;
         Point origin = VideoArea.TransformToVisual(null).TransformPoint(new Point(0, 0));
@@ -489,7 +579,7 @@ public sealed partial class MainWindow : Window
         }
         const VirtualKeyModifiers Ctrl = VirtualKeyModifiers.Control;
         const VirtualKeyModifiers CtrlShift = VirtualKeyModifiers.Control | VirtualKeyModifiers.Shift;
-        Add(VirtualKey.K, CtrlShift, StartCapture);
+        Add(VirtualKey.K, CtrlShift, () => StartCapture());
         Add(VirtualKey.I, CtrlShift, TogglePin);
         Add(VirtualKey.R, CtrlShift, () => _ = ToggleRecording());
         Add(VirtualKey.M, CtrlShift, () => _core.Call("setMuted", new { muted = !_state.Muted }));

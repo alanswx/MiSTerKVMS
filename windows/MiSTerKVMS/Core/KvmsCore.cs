@@ -99,6 +99,15 @@ public sealed class HostProfile
 {
     public string Id { get; set; } = "";
     public string Name { get; set; } = "";
+    /// <summary>"capture", "local", "ndi", or "" (decided by which of
+    /// Stream, LocalVideo and NdiSource is set).</summary>
+    public string Source { get; set; } = "";
+    /// <summary>Capture server stream, mkvm://host/stream.</summary>
+    public string Stream { get; set; } = "";
+    public string LocalVideo { get; set; } = "";
+    public string LocalAudio { get; set; } = "";
+    /// <summary>"auto", "best", "balanced" or "low".</summary>
+    public string Quality { get; set; } = "auto";
     public string MisterHost { get; set; } = "";
     public ushort MisterPort { get; set; } = 8182;
     public string ObsHost { get; set; } = "";
@@ -114,6 +123,79 @@ public sealed class HostProfile
     public double CursorGain { get; set; }
 
     public HostProfile Clone() => (HostProfile)MemberwiseClone();
+
+    /// <summary>Where video comes from, as the core decides it.</summary>
+    [JsonIgnore]
+    public string SourceKind => Source switch
+    {
+        "capture" or "local" or "ndi" => Source,
+        _ when Stream.Trim().Length > 0 => "capture",
+        _ when LocalVideo.Length > 0 => "local",
+        _ => "ndi",
+    };
+
+    /// <summary>The stream's name, from its address.</summary>
+    [JsonIgnore]
+    public string StreamName
+    {
+        get
+        {
+            var path = Stream.Contains("://") ? Stream[(Stream.IndexOf("://") + 3)..] : Stream;
+            int slash = path.IndexOf('/');
+            return slash < 0 ? "" : Uri.UnescapeDataString(path[(slash + 1)..].TrimEnd('/'));
+        }
+    }
+
+    /// <summary>The host list's second line.</summary>
+    [JsonIgnore]
+    public string Subtitle => SourceKind switch
+    {
+        "capture" => StreamName.Length > 0 ? $"Stream {StreamName}" : "No stream chosen",
+        "local" => "Capture card on this PC",
+        _ => MisterHost,
+    };
+}
+
+/// <summary>A stream a capture server announces.</summary>
+public sealed class FoundStream
+{
+    public string Name { get; set; } = "";
+    public string Address { get; set; } = "";
+    public string Mister { get; set; } = "";
+    public string Server { get; set; } = "";
+
+    public override string ToString() =>
+        Server.Length > 0 ? $"{Name} — on {Server}" : Name;
+}
+
+public sealed class CaptureCard
+{
+    public string Id { get; set; } = "";
+    public string Name { get; set; } = "";
+    public string Audio { get; set; } = "";
+
+    public override string ToString() => Name;
+}
+
+public sealed class AudioInput
+{
+    public string Id { get; set; } = "";
+    public string Name { get; set; } = "";
+
+    public override string ToString() => Name;
+}
+
+/// <summary>A capture server stream's connection and who has control.</summary>
+public sealed class StreamState
+{
+    public bool Connected { get; set; }
+    public string Error { get; set; } = "";
+    public bool MisterConnected { get; set; }
+    public string Mister { get; set; } = "";
+    public bool HaveControl { get; set; }
+    /// <summary>Who has control when someone else does ("" = nobody).</summary>
+    public string Holder { get; set; } = "";
+    public double RoundTripMs { get; set; }
 }
 
 public sealed class DisplaySettings
@@ -186,6 +268,11 @@ public sealed class ControllerState
     public double? RecordingSeconds { get; set; }
     public string? LastRecording { get; set; }
     public string? RecordingError { get; set; }
+    /// <summary>Capture server hosts only.</summary>
+    public StreamState? Stream { get; set; }
+
+    /// <summary>Someone else controls this stream's MiSTer.</summary>
+    public bool SomeoneElseInControl => Stream is { HaveControl: false } st && st.Holder.Length > 0;
 
     public bool IsConnected => Connection.State == "connected";
 }

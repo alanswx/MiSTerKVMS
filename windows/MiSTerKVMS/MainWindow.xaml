@@ -37,7 +37,7 @@
                                 </MenuFlyout>
                             </StackPanel.ContextFlyout>
                             <TextBlock Text="{x:Bind Name}" />
-                            <TextBlock Text="{x:Bind MisterHost}" Style="{StaticResource CaptionTextBlockStyle}"
+                            <TextBlock Text="{x:Bind Subtitle}" Style="{StaticResource CaptionTextBlockStyle}"
                                        Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
                         </StackPanel>
                     </DataTemplate>
@@ -47,7 +47,7 @@
                         Visibility="Collapsed">
                 <FontIcon Glyph="&#xE7F4;" FontSize="36" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
                 <TextBlock Text="No hosts" HorizontalAlignment="Center" Style="{StaticResource BodyStrongTextBlockStyle}" />
-                <TextBlock Text="Add a MiSTer and the NDI source that carries its video." TextWrapping="Wrap"
+                <TextBlock Text="Add a MiSTer: a stream from MiSTerKVMS Capture, or a capture card on this PC." TextWrapping="Wrap"
                            TextAlignment="Center" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
                 <Button Content="Add host…" HorizontalAlignment="Center" Click="AddHost_Click" />
             </StackPanel>
@@ -115,6 +115,17 @@
                     <AppBarButton Label="Send Ctrl+Alt+Del" Click="CtrlAltDel_Click">
                         <AppBarButton.Icon><FontIcon Glyph="&#xE72E;" /></AppBarButton.Icon>
                     </AppBarButton>
+                    <AppBarButton x:Name="QualityButton" Label="Quality">
+                        <AppBarButton.Icon><FontIcon Glyph="&#xE9E9;" /></AppBarButton.Icon>
+                        <AppBarButton.Flyout>
+                            <MenuFlyout>
+                                <RadioMenuFlyoutItem x:Name="QualityAuto" Text="Automatic" GroupName="Quality" Tag="auto" Click="Quality_Click" />
+                                <RadioMenuFlyoutItem x:Name="QualityBest" Text="Best (full size)" GroupName="Quality" Tag="best" Click="Quality_Click" />
+                                <RadioMenuFlyoutItem x:Name="QualityBalanced" Text="Balanced (up to 1080p)" GroupName="Quality" Tag="balanced" Click="Quality_Click" />
+                                <RadioMenuFlyoutItem x:Name="QualityLow" Text="Low (up to 720p)" GroupName="Quality" Tag="low" Click="Quality_Click" />
+                            </MenuFlyout>
+                        </AppBarButton.Flyout>
+                    </AppBarButton>
                     <AppBarButton Label="Edit host…" Icon="Edit" Click="EditHost_Click" />
                     <AppBarSeparator />
                     <AppBarButton Label="Show stats" Click="ShowStats_Click">
@@ -139,6 +150,9 @@
                     </AppBarButton>
                     <AppBarButton Label="Import hosts…" Click="Import_Click">
                         <AppBarButton.Icon><FontIcon Glyph="&#xE8B5;" /></AppBarButton.Icon>
+                    </AppBarButton>
+                    <AppBarButton Label="Viewer name…" Click="ViewerName_Click">
+                        <AppBarButton.Icon><FontIcon Glyph="&#xE77B;" /></AppBarButton.Icon>
                     </AppBarButton>
                     <AppBarButton Label="Open log" Click="OpenLog_Click">
                         <AppBarButton.Icon><FontIcon Glyph="&#xE9F9;" /></AppBarButton.Icon>
@@ -181,6 +195,18 @@
                     </StackPanel>
                 </Border>
 
+                <!-- Capture server streams: someone else controls the MiSTer. -->
+                <Border x:Name="ControlBanner" VerticalAlignment="Top" HorizontalAlignment="Center" Margin="12"
+                        Padding="16,8,8,8" CornerRadius="10" Background="#D9000000" Visibility="Collapsed">
+                    <StackPanel Orientation="Horizontal" Spacing="12">
+                        <FontIcon Glyph="&#xE7EF;" FontSize="16" Foreground="White" VerticalAlignment="Center" />
+                        <TextBlock x:Name="ControlBannerText" Foreground="White" VerticalAlignment="Center" TextWrapping="Wrap"
+                                   MaxWidth="420" />
+                        <Button x:Name="TakeControlButton" Content="Take control" Click="TakeControl_Click"
+                                Style="{StaticResource AccentButtonStyle}" />
+                    </StackPanel>
+                </Border>
+
                 <Border x:Name="StatsPanel" VerticalAlignment="Bottom" HorizontalAlignment="Left" Margin="12"
                         Padding="8" CornerRadius="6" Background="#99000000" MinWidth="250" Visibility="Collapsed">
                     <Grid>
@@ -203,6 +229,7 @@
                     <ColumnDefinition Width="*" />
                     <ColumnDefinition Width="Auto" />
                     <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="Auto" />
                 </Grid.ColumnDefinitions>
                 <StackPanel Orientation="Horizontal" Spacing="8">
                     <Ellipse x:Name="StatusDot" Width="8" Height="8" Fill="Red" VerticalAlignment="Center" />
@@ -215,9 +242,11 @@
                     <HyperlinkButton x:Name="LastRecordingLink" Padding="0" FontSize="12" Click="ShowRecording_Click"
                                      Visibility="Collapsed" />
                 </StackPanel>
-                <TextBlock Grid.Column="3" x:Name="GameText" Style="{StaticResource CaptionTextBlockStyle}"
+                <TextBlock Grid.Column="3" x:Name="ControlText" Style="{StaticResource CaptionTextBlockStyle}"
+                           VerticalAlignment="Center" />
+                <TextBlock Grid.Column="4" x:Name="GameText" Style="{StaticResource CaptionTextBlockStyle}"
                            Foreground="{ThemeResource TextFillColorSecondaryBrush}" VerticalAlignment="Center" />
-                <TextBlock Grid.Column="4" x:Name="CaptureText" Style="{StaticResource CaptionTextBlockStyle}"
+                <TextBlock Grid.Column="5" x:Name="CaptureText" Style="{StaticResource CaptionTextBlockStyle}"
                            VerticalAlignment="Center" Text="Not capturing"
                            Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
             </Grid>

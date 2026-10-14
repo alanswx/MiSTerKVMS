@@ -122,6 +122,26 @@ fn call(c: &Arc<Controller>, r: Value) -> Result<Value, String> {
                 .map_err(|e| e.to_string())
         }
         "ffmpegAvailable" => Ok(json!(crate::video::ffmpeg::ffmpeg_available())),
+        // Capture server streams on the network; blocks up to waitMs.
+        "findStreams" => {
+            let wait: Option<u32> = arg(&r, "waitMs")?;
+            to_json(crate::discover::find_streams(wait.unwrap_or(2000)))
+        }
+        "captureCards" => to_json(crate::discover::capture_cards()),
+        "audioInputs" => to_json(crate::discover::audio_inputs()),
+        "takeControl" => {
+            c.take_control();
+            done
+        }
+        "viewerName" => Ok(json!(c.viewer_name())),
+        "setViewerName" => {
+            c.set_viewer_name(arg(&r, "name")?);
+            done
+        }
+        "setQuality" => {
+            c.set_quality(arg(&r, "quality")?);
+            done
+        }
 
         "profiles" => to_json(c.profiles()),
         "newProfile" => to_json(HostProfile::default()),
