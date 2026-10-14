@@ -17,6 +17,7 @@ path = "src/kvms_alias.rs"
 [dependencies]
 kvms-core = { path = "../core" }
 kvms-codec = { path = "../codec" }
+kvms-capture = { path = "../capture" }
 mkvm = { path = "../mkvm" }
 memory-stats = "1"
 clap = { version = "4", features = ["derive"] }

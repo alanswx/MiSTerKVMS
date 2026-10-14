@@ -1503,6 +1503,7 @@ name = "kvms-cli"
 version = "0.9.0"
 dependencies = [
  "clap",
+ "kvms-capture",
  "kvms-codec",
  "kvms-core",
  "memory-stats",

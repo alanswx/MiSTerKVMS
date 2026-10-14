@@ -4,6 +4,7 @@
 // exit code 1), so it's easy to script.
 
 mod media;
+mod session;
 mod settings;
 mod soak;
 mod stream;
@@ -62,12 +63,23 @@ enum Cmd {
         full: bool,
     },
     /// Record for a duration: .wav = audio only, .mp4 = video + audio (needs ffmpeg).
+    /// From a capture server stream (--stream) or a card on this computer
+    /// (--local): .mp4, with the apps' recorder.
     Record {
         /// e.g. 10s, 500ms, 2m
         duration: String,
         out: PathBuf,
         #[arg(long)]
         full: bool,
+        /// Capture server stream (mkvm://host/stream).
+        #[arg(long)]
+        stream: Option<String>,
+        /// Capture card on this computer (id or name; test:pattern works).
+        #[arg(long)]
+        local: Option<String>,
+        /// Audio for --local (id or name); default: the card's own.
+        #[arg(long)]
+        local_audio: Option<String>,
     },
     /// Save each changed frame as PNG for a duration (to check animation/timing).
     Frames {
@@ -230,7 +242,7 @@ fn run(cli: Cli) -> Result<Value, String> {
             Ok(json!({ "streams": found }))
         }
         Cmd::Soak { duration: d, stream, local, ndi, every, limit_mb } => {
-            let source = soak::SoakSource { stream, local, ndi };
+            let source = soak::SoakSource { stream, local, local_audio: None, ndi };
             soak::soak(source, duration(&d)?, duration(&every)?, limit_mb)
         }
         Cmd::Status => status(&s),
@@ -267,7 +279,17 @@ fn run(cli: Cli) -> Result<Value, String> {
                 Ok(json!({ "path": out, "source": "capture", "width": area.w, "height": area.h }))
             }
         }
-        Cmd::Record { duration: d, out, full } => {
+        Cmd::Record { duration: d, out, full, stream, local, local_audio } if stream.is_some() || local.is_some() => {
+            if !out.extension().is_some_and(|e| e.eq_ignore_ascii_case("mp4")) {
+                return Err("recording a stream or local card makes an .mp4".into());
+            }
+            let session = session::open(session::SessionSource { stream, local, local_audio, ndi: None }, !full)?;
+            session.wait_connected(Duration::from_secs(15))?;
+            let path = session.record(duration(&d)?, &out)?;
+            let st = session.core.state();
+            Ok(json!({ "path": path, "video": st.video_stats }))
+        }
+        Cmd::Record { duration: d, out, full, .. } => {
             let src = Source::open(&s.ndi()?, &s.obs_host)?;
             let r = media::record(&src, duration(&d)?, &out, full)?;
             Ok(json!({

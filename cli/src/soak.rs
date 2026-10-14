@@ -2,75 +2,23 @@
 //! renderer) for a long time and watch memory. Fails if memory keeps
 //! growing after warm-up (docs/CAPTURE-SERVER.md §2).
 
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
-use kvms_core::video::FrameOutput;
-use kvms_core::{Controller, ControllerEvent, ControllerObserver, HostProfile, NativeSurface};
 use serde_json::{json, Value};
 
-struct Quiet;
-
-impl ControllerObserver for Quiet {
-    fn on_event(&self, _: ControllerEvent) {}
-}
+pub use crate::session::SessionSource as SoakSource;
 
 fn rss_mb() -> f64 {
     memory_stats::memory_stats().map_or(0.0, |m| m.physical_mem as f64 / 1_048_576.0)
 }
 
-pub struct SoakSource {
-    pub stream: Option<String>,
-    pub local: Option<String>,
-    pub ndi: Option<String>,
-}
-
 /// Runs for `duration`, printing a JSON line every `every`. Memory is judged
 /// from the end of warm-up (a fifth of the run, at most 2 minutes) on.
 pub fn soak(source: SoakSource, duration: Duration, every: Duration, limit_mb: f64) -> Result<Value, String> {
-    let settings = std::env::temp_dir().join(format!("misterkvms-soak-{}.json", std::process::id()));
-    let core = Controller::with_settings_file(settings.display().to_string(), Arc::new(Quiet));
-    let mut profile = HostProfile { name: "soak".into(), ..Default::default() };
-    match (source.stream, source.local, source.ndi) {
-        (Some(s), _, _) => {
-            profile.source = "capture".into();
-            profile.stream = s;
-        }
-        (_, Some(l), _) => {
-            profile.source = "local".into();
-            profile.local_video = l;
-        }
-        (_, _, Some(n)) => {
-            profile.source = "ndi".into();
-            profile.ndi_source = n;
-        }
-        _ => return Err("give --stream, --local or --ndi".into()),
-    }
-    let id = profile.id.clone();
-    core.save_profile(profile);
-
-    let pictures = Arc::new(AtomicU64::new(0));
-    let frames = {
-        let pictures = pictures.clone();
-        // Like a shell: take each picture and hand its buffer back.
-        let out: Arc<std::sync::Mutex<Option<Arc<FrameOutput>>>> = Arc::new(std::sync::Mutex::new(None));
-        let out2 = out.clone();
-        let f = FrameOutput::new(move || {
-            if let Some(o) = out2.lock().unwrap().as_ref() {
-                if let Some(frame) = o.take() {
-                    pictures.fetch_add(1, Ordering::Relaxed);
-                    o.recycle(frame.data);
-                }
-            }
-        });
-        *out.lock().unwrap() = Some(f.clone());
-        f
-    };
-    core.set_frame_output(Some(frames));
-    core.attach_surface(NativeSurface::Offscreen, 1280, 720, 1.0);
-    core.open(id);
-
+    let session = crate::session::open(source, true)?;
+    let core = &session.core;
+    let pictures = session.pictures.clone();
     let start = Instant::now();
     let warmup = (duration / 5).min(Duration::from_secs(120));
     let mut samples: Vec<(f64, f64)> = Vec::new();
@@ -101,9 +49,7 @@ pub fn soak(source: SoakSource, duration: Duration, every: Duration, limit_mb: f
             samples.push((t, mem));
         }
     }
-    core.close();
-    core.detach_surface();
-    let _ = std::fs::remove_file(settings);
+    drop(session);
 
     // Growth: median of the last third minus median of the first third.
     let third = (samples.len() / 3).max(1);
