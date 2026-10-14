@@ -288,6 +288,20 @@ pub fn best_format(formats: &[VideoFormat]) -> Option<VideoFormat> {
     formats.iter().copied().max_by(|a, b| key(a).cmp(&key(b)))
 }
 
+/// Rates offered from a range a card reports (DirectShow, AVFoundation):
+/// the common ones inside it, plus its ends. Rounded to 0.01.
+pub fn rates_in_range(min_fps: f64, max_fps: f64, extra: &[f64]) -> Vec<f64> {
+    const COMMON: [f64; 10] = [24.0, 25.0, 30.0, 50.0, 59.94, 60.0, 100.0, 120.0, 144.0, 240.0];
+    let (lo, hi) = (min_fps.min(max_fps), max_fps.max(min_fps));
+    let mut rates: Vec<f64> = COMMON.iter().copied().filter(|r| *r >= lo - 0.01 && *r <= hi + 0.01).collect();
+    rates.push(hi);
+    rates.extend(extra.iter().copied().filter(|r| *r > 0.0));
+    let mut rates: Vec<f64> = rates.into_iter().filter(|r| *r > 0.0).map(|r| (r * 100.0).round() / 100.0).collect();
+    rates.sort_by(|a, b| b.total_cmp(a));
+    rates.dedup_by(|a, b| (*a - *b).abs() < 0.02);
+    rates
+}
+
 /// The audio device that belongs to a video device: capture cards show up
 /// as e.g. "UGREEN 25773" (video) and "Digital Audio Interface (UGREEN
 /// 25773)" (audio).
@@ -334,6 +348,14 @@ mod tests {
             f(PixelFormat::Mjpeg, 1280, 720, 60.0),
         ];
         assert_eq!(best_format(&formats), Some(formats[1]));
+    }
+
+    #[test]
+    fn rates_from_a_range() {
+        // GC573 1080p: 1 to 240 fps, default 60.
+        assert_eq!(rates_in_range(1.0, 240.0, &[60.0]), vec![240.0, 144.0, 120.0, 100.0, 60.0, 59.94, 50.0, 30.0, 25.0, 24.0]);
+        assert_eq!(rates_in_range(30.0, 30.0, &[]), vec![30.0]);
+        assert_eq!(rates_in_range(5.0, 29.97, &[]), vec![29.97, 25.0, 24.0]);
     }
 
     #[test]

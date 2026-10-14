@@ -224,10 +224,10 @@ unsafe fn formats(config: &IAMStreamConfig) -> Vec<(VideoFormat, usize)> {
         let Some(pixel) = pixel_format(&mt.get().subtype) else { continue };
         let Some((w, h, interval)) = video_info(mt.get()) else { continue };
         let cc = &*(caps.as_ptr() as *const VIDEO_STREAM_CONFIG_CAPS);
-        let mut rates = vec![fps_of(interval)];
-        if cc.MinFrameInterval > 0 {
-            rates.push(fps_of(cc.MinFrameInterval));
-        }
+        // The range the pin allows (fastest = shortest interval).
+        let fastest = if cc.MinFrameInterval > 0 { fps_of(cc.MinFrameInterval) } else { fps_of(interval) };
+        let slowest = if cc.MaxFrameInterval > 0 { fps_of(cc.MaxFrameInterval) } else { fastest };
+        let rates = crate::rates_in_range(slowest, fastest, &[fps_of(interval)]);
         for fps in rates {
             let f = VideoFormat { pixel, width: w as u32, height: h.unsigned_abs(), fps };
             if fps > 0.0 && !out.iter().any(|(o, _): &(VideoFormat, usize)| *o == f) {

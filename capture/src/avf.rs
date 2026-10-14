@@ -53,7 +53,7 @@ unsafe fn video_devices() -> Vec<Retained<AVCaptureDevice>> {
     session.devices().to_vec()
 }
 
-/// Each format with its fastest rate (and 60 when it's in range, MiSTer's).
+/// Each format with the common rates its ranges allow.
 unsafe fn formats(device: &AVCaptureDevice) -> Vec<(VideoFormat, Retained<AVCaptureDeviceFormat>, f64)> {
     let mut out = Vec::new();
     for f in device.formats().to_vec() {
@@ -62,10 +62,7 @@ unsafe fn formats(device: &AVCaptureDevice) -> Vec<(VideoFormat, Retained<AVCapt
         let pixel = pixel_format(desc.media_sub_type());
         for range in f.videoSupportedFrameRateRanges().to_vec() {
             let (min, max) = (range.minFrameRate(), range.maxFrameRate());
-            let mut rates = vec![max];
-            if (min..max).contains(&60.0) {
-                rates.push(60.0);
-            }
+            let rates = crate::rates_in_range(min, max, &[]);
             for fps in rates {
                 let vf = VideoFormat { pixel, width: dims.width as u32, height: dims.height as u32, fps: (fps * 100.0).round() / 100.0 };
                 if !out.iter().any(|(o, _, _): &(VideoFormat, _, _)| *o == vf) {

@@ -78,7 +78,11 @@
       <div class="fields">
         <label>Name <input id="fName" required placeholder="MiSTer-SS1"></label>
         <label>Capture card <select id="fVideo"></select></label>
-        <label>Format <select id="fFormat"></select></label>
+        <div class="inline">
+          <label>Resolution <select id="fRes"></select></label>
+          <label>Frame rate <select id="fFps"></select></label>
+        </div>
+        <span class="hint" id="fFormatNote"></span>
         <label>Audio <select id="fAudio"></select></label>
         <div class="inline">
           <label>MiSTer address (mrext Remote) <input id="fMister" placeholder="192.168.1.50"></label>
@@ -171,7 +175,7 @@ async function loadDevices() {
 function streamCard(s) {
   const st = s.status, c = s.config;
   const signal = st.error ? `<span class="bad"><span class="dot bad"></span>${esc(st.error)}</span>`
-    : st.signal ? `<span class="ok"><span class="dot ok"></span>${st.width}×${st.height} ${esc(st.pixel.toUpperCase())}, ${st.measuredFps.toFixed(0)} fps</span>`
+    : st.signal ? `<span class="ok"><span class="dot ok"></span>${st.width}×${st.height} ${esc(st.pixel.toUpperCase())}, ${st.measuredFps.toFixed(0)} fps${st.fps ? ` (set to ${Math.round(st.fps * 100) / 100})` : ""}</span>`
     : `<span class="warn"><span class="dot warn"></span>no signal</span>`;
   const mister = !c.mister ? `<span class="warn">no MiSTer address</span>`
     : st.misterConnected ? `<span class="ok">MiSTer ${esc(c.mister)} connected</span>`
@@ -211,6 +215,15 @@ function renderStreams() {
   box.querySelectorAll("[data-edit]").forEach(b => b.onclick = () => edit(b.dataset.edit));
 }
 
+/// A motion-JPEG <img> never fires "load" (the response never ends): hide
+/// the "opening…" text once the first frame has a size.
+function watchFirstFrame(img, msg) {
+  const t = setInterval(() => {
+    if (!img.isConnected) return clearInterval(t);
+    if (img.naturalWidth > 0) { img.hidden = false; msg.hidden = true; clearInterval(t); }
+  }, 200);
+}
+
 function startPreview(img) {
   const msg = img.parentElement.querySelector(".msg");
   img.onerror = () => {
@@ -238,7 +251,7 @@ function renderDevices() {
     const shot = b.closest(".shot");
     shot.innerHTML = `<img alt=""><div class="msg">opening…</div>`;
     const img = shot.querySelector("img"), msg = shot.querySelector(".msg");
-    img.onload = () => { img.hidden = false; msg.hidden = true; };
+    watchFirstFrame(img, msg);
     img.onerror = () => { img.hidden = true; msg.hidden = false; msg.textContent = "Can't open this card (in use by another app, e.g. OBS?)"; };
     img.src = "/preview/device?id=" + encodeURIComponent(b.dataset.preview);
   });
@@ -250,9 +263,69 @@ function fillSelect(sel, items, value) {
   sel.value = value;
 }
 
-function deviceFormats(id) {
-  const d = devices.video.find(d => d.id === id);
-  return [["", d && d.best ? `Automatic (${fmt(d.best)})` : "Automatic"], ...(d ? d.formats.map(f => [JSON.stringify(f), fmt(f)]) : [])];
+// Formats: the card's resolutions, the rates each allows, and the pixel
+// format to ask for (MJPEG first: raw formats run slower over USB).
+const PIXEL_ORDER = ["mjpeg", "nv12", "yuy2", "bgra"];
+const PIXEL_NAMES = { mjpeg: "MJPEG (compressed by the card)", nv12: "NV12 (raw)", yuy2: "YUY2 (raw)", bgra: "RGB (raw)" };
+const device = id => devices.video.find(d => d.id === id);
+const sameRate = (a, b) => Math.abs(a - b) < 0.05;
+
+function resolutions(d) {
+  const seen = new Map();
+  for (const f of d ? d.formats : []) seen.set(`${f.width}x${f.height}`, [f.width, f.height]);
+  return [...seen.values()].sort((a, b) => b[0] * b[1] - a[0] * a[1] || b[0] - a[0]);
+}
+
+function ratesFor(d, w, h) {
+  const rates = [];
+  for (const f of d ? d.formats : []) {
+    if (f.width === w && f.height === h && !rates.some(r => sameRate(r, f.fps))) rates.push(f.fps);
+  }
+  return rates.sort((a, b) => b - a);
+}
+
+/// 60 if the card does it, else 30, else the fastest up to 60, else the fastest.
+function defaultRate(rates) {
+  return rates.find(r => sameRate(r, 60)) ?? rates.find(r => sameRate(r, 30)) ?? rates.find(r => r <= 60) ?? rates[0];
+}
+
+function pixelFor(d, w, h, fps) {
+  const offered = d.formats.filter(f => f.width === w && f.height === h && sameRate(f.fps, fps)).map(f => f.pixel);
+  return PIXEL_ORDER.find(p => offered.includes(p)) || offered[0];
+}
+
+const rateLabel = r => `${Math.round(r * 100) / 100} fps`;
+
+/// Fill the resolution and rate lists for card `id`, selecting `format`
+/// (a saved one) or the card's best resolution at 60/30 fps.
+function fillFormat(id, format) {
+  const d = device(id);
+  const res = resolutions(d);
+  const pick = format ? [format.width, format.height] : d && d.best ? [d.best.width, d.best.height] : res[0];
+  fillSelect($("fRes"), res.map(([w, h]) => [`${w}x${h}`, `${w}×${h}`]), pick ? `${pick[0]}x${pick[1]}` : "");
+  fillRates(format && format.fps);
+}
+
+function fillRates(wanted) {
+  const d = device($("fVideo").value);
+  const [w, h] = ($("fRes").value || "0x0").split("x").map(Number);
+  const rates = ratesFor(d, w, h);
+  const pick = wanted && rates.find(r => sameRate(r, wanted)) || defaultRate(rates);
+  fillSelect($("fFps"), rates.map(r => [String(r), rateLabel(r)]), pick !== undefined ? String(pick) : "");
+  formatNote();
+}
+
+function chosenFormat() {
+  const d = device($("fVideo").value);
+  const [w, h] = ($("fRes").value || "").split("x").map(Number);
+  const fps = Number($("fFps").value);
+  if (!d || !w || !fps) return null;
+  return { pixel: pixelFor(d, w, h, fps), width: w, height: h, fps };
+}
+
+function formatNote() {
+  const f = chosenFormat();
+  $("fFormatNote").textContent = f ? `The card sends ${PIXEL_NAMES[f.pixel] || f.pixel}.` : "No formats: the card may be in use by another app.";
 }
 
 function edit(name, deviceId) {
@@ -263,7 +336,7 @@ function edit(name, deviceId) {
   $("editorTitle").textContent = name ? `Edit ${name}` : "New stream";
   $("fName").value = s ? s.name : `MiSTer-${(state.streams.length + 1)}`;
   fillSelect($("fVideo"), devices.video.map(d => [d.id, d.name]), id);
-  fillSelect($("fFormat"), deviceFormats(id), s && s.format ? JSON.stringify(s.format) : "");
+  fillFormat(id, s && s.format);
   fillSelect($("fAudio"), [["", "None"], ...devices.audio.map(a => [a.name, a.name])], s ? s.audio : (d && d.audio) || "");
   $("fMister").value = s ? s.mister : "";
   $("testResult").textContent = "";
@@ -280,7 +353,7 @@ function editorPreview() {
   const src = stream ? `/preview/stream/${encodeURIComponent(stream.config.name)}` : `/preview/device?id=${encodeURIComponent(id)}`;
   shot.innerHTML = `<img alt=""><div class="msg">opening…</div>`;
   const img = shot.querySelector("img"), msg = shot.querySelector(".msg");
-  img.onload = () => { img.hidden = false; msg.hidden = true; };
+  watchFirstFrame(img, msg);
   img.onerror = () => { img.hidden = true; msg.hidden = false; msg.textContent = "Can't open this card (in use by another app, e.g. OBS?)"; };
   if (id) img.src = src;
 }
@@ -299,10 +372,12 @@ async function saveStreams(list) {
 
 $("fVideo").onchange = () => {
   const id = $("fVideo").value, d = devices.video.find(d => d.id === id);
-  fillSelect($("fFormat"), deviceFormats(id), "");
+  fillFormat(id, null);
   if (d && d.audio) $("fAudio").value = d.audio;
   editorPreview();
 };
+$("fRes").onchange = () => fillRates(Number($("fFps").value));
+$("fFps").onchange = formatNote;
 $("add").onclick = () => edit(null);
 $("cancel").onclick = closeEditor;
 $("refresh").onclick = () => loadDevices().then(() => toast("Cards updated"));
@@ -328,7 +403,7 @@ $("editor").onsubmit = async ev => {
     name: $("fName").value.trim(),
     video: id,
     videoName: d ? d.name : "",
-    format: $("fFormat").value ? JSON.parse($("fFormat").value) : null,
+    format: chosenFormat(),
     audio: $("fAudio").value,
     mister: $("fMister").value.trim(),
     misterPort: old.misterPort || 8182,
