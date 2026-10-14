@@ -1615,6 +1615,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "mkvm"
+version = "0.9.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "naga"
 version = "30.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
