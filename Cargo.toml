@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["core", "cli", "linux", "mkvm", "uniffi-bindgen"]
+members = ["capture", "core", "cli", "linux", "mkvm", "uniffi-bindgen"]
 
 [workspace.package]
 version = "0.9.0"

@@ -1,0 +1,23 @@
+[package]
+name = "kvms-capture"
+description = "Capture cards (video + audio) for misterkvms-capture and the apps' local capture."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "kvms_capture"
+
+[dependencies]
+cpal = "0.18"
+serde = { version = "1", features = ["derive"] }
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62", features = [
+    "Win32_Foundation",
+    "Win32_Media_MediaFoundation",
+    "Win32_System_Com",
+    "Win32_System_Com_StructuredStorage",
+    "Win32_System_Variant",
+] }
+windows-core = "0.62"
