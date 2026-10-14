@@ -297,9 +297,52 @@ mod win {
         }
     }
 
-    fn install(dir: &Path) -> Result<(), String> {
+    /// Where the service's program lives: %ProgramFiles%\MiSTerKVMS\Capture.
+    fn installed_exe() -> PathBuf {
+        let base = std::env::var("ProgramFiles").unwrap_or_else(|_| r"C:\Program Files".into());
+        PathBuf::from(base).join("MiSTerKVMS").join("Capture").join("misterkvms-capture.exe")
+    }
+
+    fn same_file(a: &Path, b: &Path) -> bool {
+        match (a.canonicalize(), b.canonicalize()) {
+            (Ok(a), Ok(b)) => a == b,
+            _ => false,
+        }
+    }
+
+    /// Copy this program to Program Files (the service runs it from there,
+    /// so the download can be moved or deleted). A newer download replaces
+    /// the installed one: stop the service first so the file isn't in use.
+    fn copy_program(manager: &ServiceManager) -> Result<PathBuf, String> {
         let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+        let target = installed_exe();
+        if same_file(&exe, &target) {
+            return Ok(target);
+        }
+        if let Ok(service) = manager.open_service(NAME, ServiceAccess::QUERY_STATUS | ServiceAccess::STOP) {
+            if service.stop().is_ok() {
+                wait_for(&service, ServiceState::Stopped, 20)?;
+            }
+        }
+        let folder = target.parent().expect("has a folder");
+        std::fs::create_dir_all(folder).map_err(|e| format!("{}: {e}", folder.display()))?;
+        // The stopped service's process may hold the file for a moment.
+        let mut tries = 0;
+        loop {
+            match std::fs::copy(&exe, &target) {
+                Ok(_) => return Ok(target),
+                Err(_) if tries < 20 => {
+                    tries += 1;
+                    std::thread::sleep(Duration::from_millis(250));
+                }
+                Err(e) => return Err(format!("can't copy the program to {}: {e}", target.display())),
+            }
+        }
+    }
+
+    fn install(dir: &Path) -> Result<(), String> {
         let manager = manager()?;
+        let exe = copy_program(&manager)?;
         let info = ServiceInfo {
             name: NAME.into(),
             display_name: DISPLAY_NAME.into(),
@@ -354,8 +397,33 @@ mod win {
             Err(e) => return Err(describe(e)),
         }
         firewall_remove(dir);
+        remove_program();
         println!("removed {DISPLAY_NAME}");
         Ok(())
+    }
+
+    /// Delete the Program Files copy (the config folder stays). A running
+    /// program can't delete itself, so a detached cmd does it a moment later.
+    fn remove_program() {
+        let target = installed_exe();
+        let Some(folder) = target.parent() else { return };
+        if !target.exists() {
+            return;
+        }
+        let parent = folder.parent().unwrap_or(folder);
+        if std::env::current_exe().is_ok_and(|me| same_file(&me, &target)) {
+            let script = format!(
+                "ping -n 3 127.0.0.1 >nul & del /q \"{}\" & rmdir \"{}\" & rmdir \"{}\"",
+                target.display(),
+                folder.display(),
+                parent.display()
+            );
+            let _ = std::process::Command::new("cmd").args(["/c", &script]).creation_flags(DETACHED_PROCESS | CREATE_NO_WINDOW).spawn();
+        } else {
+            let _ = std::fs::remove_file(&target);
+            let _ = std::fs::remove_dir(folder);
+            let _ = std::fs::remove_dir(parent);
+        }
     }
 
     fn start() -> Result<(), String> {
@@ -474,11 +542,22 @@ mod win {
         use windows::Win32::System::Threading::{GetExitCodeProcess, WaitForSingleObject, INFINITE};
         use windows::Win32::UI::Shell::{ShellExecuteExW, SEE_MASK_NOCLOSEPROCESS, SEE_MASK_NO_CONSOLE, SHELLEXECUTEINFOW};
         use windows::Win32::UI::WindowsAndMessaging::SW_HIDE;
+        use windows::Win32::System::Com::{CoInitializeEx, COINIT_APARTMENTTHREADED, COINIT_DISABLE_OLE1DDE};
+        use windows::Win32::UI::Shell::SEE_MASK_NOASYNC;
+        use windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
+        // ShellExecuteEx needs COM on the calling thread (a setup-page
+        // request thread), and NOASYNC as there's no message loop here.
+        unsafe {
+            let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
+        }
         let file = HSTRING::from(exe.as_os_str());
         let params = HSTRING::from(params);
         let mut info = SHELLEXECUTEINFOW {
             cbSize: std::mem::size_of::<SHELLEXECUTEINFOW>() as u32,
-            fMask: SEE_MASK_NOCLOSEPROCESS | SEE_MASK_NO_CONSOLE,
+            // The browser the button was clicked in: without an owner in the
+            // foreground, Windows only flashes the prompt in the taskbar.
+            hwnd: unsafe { GetForegroundWindow() },
+            fMask: SEE_MASK_NOCLOSEPROCESS | SEE_MASK_NO_CONSOLE | SEE_MASK_NOASYNC,
             lpVerb: w!("runas"),
             lpFile: windows::core::PCWSTR(file.as_ptr()),
             lpParameters: windows::core::PCWSTR(params.as_ptr()),

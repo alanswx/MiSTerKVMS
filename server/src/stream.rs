@@ -534,7 +534,9 @@ fn encode_frame(stream: &Stream, frame: VideoFrame, native_bgra: &mut Bgra) -> O
     }
 
     let native = (frame.width, frame.height);
-    let needs_pixels = targets.iter().any(|t| *t != native) || frame.format != PixelFormat::Mjpeg;
+    // BGRA only to scale (or for a BGRA card): native-size pictures of raw
+    // cards are encoded straight from their YUV.
+    let needs_pixels = targets.iter().any(|t| *t != native) || frame.format == PixelFormat::Bgra;
     if needs_pixels {
         let ok = match frame.format {
             PixelFormat::Mjpeg => jpeg::decode(&frame.data, native_bgra).map_err(|e| e.to_string()),
@@ -564,7 +566,12 @@ fn encode_frame(stream: &Stream, frame: VideoFrame, native_bgra: &mut Bgra) -> O
         } else {
             let mut out = Vec::new();
             let result = if target == native {
-                jpeg::encode(native_bgra, quality, &mut out)
+                let (data, width, height, stride) = (&frame.data[..], frame.width, frame.height, frame.stride);
+                match frame.format {
+                    PixelFormat::Nv12 => jpeg::encode_yuv(jpeg::Yuv::Nv12 { data, width, height, stride }, quality, &mut out),
+                    PixelFormat::Yuy2 => jpeg::encode_yuv(jpeg::Yuv::Yuy2 { data, width, height, stride }, quality, &mut out),
+                    _ => jpeg::encode(native_bgra, quality, &mut out),
+                }
             } else {
                 let mut scaled = Bgra::default();
                 scale::scale(native_bgra, target.0, target.1, &mut scaled);

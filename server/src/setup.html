@@ -475,13 +475,13 @@ function renderService() {
     hint = "";
   } else if (s.thisIsService) {
     status = `<span class="ok"><span class="dot ok"></span>Running as a service: starts when the PC starts, no need to log in.</span>`;
-    hint = `Runs <code>${esc(s.exe)}</code>: keep it there.`;
+    hint = `Installed in <code>${esc(s.exe)}</code>.`;
   } else if (s.installed) {
     status = `<span class="warn"><span class="dot warn"></span>Running in this window. The service is installed but ${esc(s.state || "not running")}.</span>`;
-    hint = "Start it and this window hands over and closes.";
+    hint = "Starting it installs this copy of the program for the service (Windows asks for permission); this window then hands over and closes.";
   } else {
     status = `<span class="warn"><span class="dot warn"></span>Running in this window: closing it stops the streams.</span>`;
-    hint = "Install it as a Windows service to keep the streams running, also after a restart, without logging in. Windows asks for permission; this window then hands over and closes.";
+    hint = "Install it as a Windows service to keep the streams running, also after a restart, without logging in. The program is copied to Program Files and Windows asks for permission; this window then hands over and closes.";
   }
   if (!s.local) hint = "This can only be changed on the capture PC itself.";
   $("svcStatus").innerHTML = status;
@@ -539,8 +539,8 @@ async function serviceAction(action, busy) {
   renderService();
 }
 
-$("svcInstall").onclick = () => serviceAction("install", "Installing… answer the Windows prompt.");
-$("svcStart").onclick = () => serviceAction("start", "Starting the service… answer the Windows prompt.");
+$("svcInstall").onclick = () => serviceAction("install", "Installing… answer the Windows prompt (no prompt? look for a flashing shield in the taskbar).");
+$("svcStart").onclick = () => serviceAction("install", "Starting the service… answer the Windows prompt (no prompt? look for a flashing shield in the taskbar).");
 $("svcRestart").onclick = () => serviceAction("restart", "Restarting…");
 $("svcStop").onclick = () => serviceAction("stop", "Stopping…");
 $("svcUninstall").onclick = () => serviceAction("uninstall", "Removing the service…");
