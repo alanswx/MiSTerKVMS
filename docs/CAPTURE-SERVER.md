@@ -52,7 +52,7 @@ clients' local capture and the CLI run the same code:
 
 | Crate | Kind | Contents | Used by |
 |---|---|---|---|
-| `capture/` | lib | `CaptureDevice` trait; Media Foundation / AVFoundation / V4L2 backends; audio via `cpal`; stable device IDs; hot-plug; "in use by another app" detection | server, core (local capture), CLI |
+| `capture/` | lib | One `VideoCapture` over per-OS backends: Media Foundation (USB sticks), DirectShow (cards Media Foundation can't open, e.g. GC573, including their audio pin), AVFoundation (macOS), V4L2 (Linux, later); audio via `cpal`; stable device IDs; "in use by another app" detection | server, core (local capture), CLI |
 | `codec/` | lib | JPEG decode (`zune-jpeg`) and encode (`turbojpeg`); H.264 encode/decode through the OS (Media Foundation, VideoToolbox, VA-API) and `openh264`; scaling (integer box, area) | server, core |
 | `mkvm/` | lib | protocol types, frame parser, client and server connection state machines, control token logic | server, core, CLI, later the OBS plugin |
 | `server/` | bin `misterkvms-capture` | streams, viewers, pipelines, mrext sessions, setup page, service install | — |
@@ -332,6 +332,14 @@ and C8 (hardware codecs on three OSes).
   run 1080p60; the setup page should warn.
 - **macOS capture box:** Camera permission, auto-login for headless use,
   and card driver support vary; the Windows PC stays the realistic box.
+- **AVerMedia GC573:** on Windows it works through DirectShow (Media
+  Foundation can't open it), video and its audio pin. Asking DirectShow to
+  convert its frames crashes inside the card's filters, so frames are taken
+  as the card sends them. Raw 1080p60 JPEG encoding takes ~17 ms a frame:
+  encode on two threads.
+- **Backends, not plugins:** new kinds of cards are new backends compiled
+  into `capture` (vendor SDKs such as DeckLink would be loaded at run time,
+  like NDI was). A plugin interface only if outside contributors need one.
 - **Away from home and phones:** later. Options: QUIC through a forwarded
   port or Tailscale, a WebRTC output for browsers and phones.
 - **Mac App Store (later):** the sandbox rules out Accessibility, so an App
