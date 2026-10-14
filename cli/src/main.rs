@@ -5,6 +5,7 @@
 
 mod media;
 mod settings;
+mod stream;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -111,6 +112,19 @@ enum Cmd {
         #[arg(long)]
         full: bool,
     },
+    /// Watch a capture server stream like a viewer and report what arrived
+    /// (fps, size, bandwidth, latency). E.g. `stream mkvm://capture-pc/MiSTer-1`.
+    Stream {
+        address: String,
+        #[arg(long, default_value = "5s")]
+        duration: String,
+        /// Largest picture to ask for, e.g. 1280x720 (default: native).
+        #[arg(long)]
+        max: Option<String>,
+        /// Save the last picture as PNG.
+        #[arg(long)]
+        save: Option<PathBuf>,
+    },
     /// Copy a core (.rbf) to the MiSTer over SSH and load it.
     LoadCore {
         rbf: PathBuf,
@@ -175,6 +189,16 @@ fn run(cli: Cli) -> Result<Value, String> {
         s.ndi_source = n;
     }
     match cli.cmd {
+        Cmd::Stream { address, duration: d, max, save } => {
+            let max = match max {
+                Some(m) => {
+                    let (w, h) = m.split_once(['x', 'X']).ok_or("--max is WIDTHxHEIGHT")?;
+                    Some((w.parse().map_err(|_| "bad --max width")?, h.parse().map_err(|_| "bad --max height")?))
+                }
+                None => None,
+            };
+            stream::watch(&address, duration(&d)?, max, save.as_deref())
+        }
         Cmd::Status => status(&s),
         Cmd::Machines => Ok(json!({
             "default": s.default,

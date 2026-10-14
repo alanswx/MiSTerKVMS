@@ -1,0 +1,21 @@
+[package]
+name = "misterkvms-capture"
+description = "misterkvms-capture: owns the capture cards and streams each MiSTer to any number of viewers (mkvm protocol)."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "misterkvms-capture"
+path = "src/main.rs"
+
+[dependencies]
+mkvm = { path = "../mkvm" }
+kvms-capture = { path = "../capture" }
+kvms-codec = { path = "../codec" }
+kvms-core = { path = "../core" }
+clap = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+mdns-sd = "0.13"
+tiny_http = "0.12"

@@ -18,7 +18,7 @@ pub use address::StreamAddress;
 pub use control::{Control, ControlChange, ViewerId};
 pub use held::HeldInput;
 pub use message::*;
-pub use wire::{read_message, write_message, Header, WireError};
+pub use wire::{read_message, write_message, write_video, Header, WireError};
 
 /// Protocol version. A different major version is refused in `Hello`.
 pub const PROTOCOL_VERSION: u32 = 1;

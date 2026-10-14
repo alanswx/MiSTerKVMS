@@ -37,7 +37,7 @@ pub enum Codec {
 }
 
 impl Codec {
-    fn id(self) -> u8 {
+    pub(crate) fn id(self) -> u8 {
         match self {
             Codec::Jpeg => 1,
             Codec::H264 => 2,

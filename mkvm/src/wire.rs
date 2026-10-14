@@ -94,6 +94,33 @@ pub fn write_message(w: &mut impl Write, msg: &Message, timestamp: i64) -> io::R
     }
 }
 
+/// Write a video message from borrowed data (the server sends one encoded
+/// frame to many viewers without copying it per viewer). Same bytes as
+/// `write_message(Message::Video(..))`.
+pub fn write_video(
+    w: &mut impl Write,
+    codec: crate::message::Codec,
+    keyframe: bool,
+    width: u32,
+    height: u32,
+    data: &[u8],
+    timestamp: i64,
+) -> io::Result<()> {
+    let mut head = [0u8; HEADER_LEN + 9];
+    let header = Header {
+        kind: crate::message::Kind::Video as u8,
+        flags: if keyframe { FLAG_KEYFRAME } else { 0 },
+        len: (9 + data.len()) as u32,
+        timestamp,
+    };
+    head[..HEADER_LEN].copy_from_slice(&header.encode());
+    head[HEADER_LEN] = codec.id();
+    head[HEADER_LEN + 1..HEADER_LEN + 5].copy_from_slice(&width.to_le_bytes());
+    head[HEADER_LEN + 5..].copy_from_slice(&height.to_le_bytes());
+    w.write_all(&head)?;
+    w.write_all(data)
+}
+
 /// Read one message. Unknown kinds come back as `Message::Unknown` so newer
 /// peers don't break older ones.
 pub fn read_message(r: &mut impl Read) -> Result<(Message, Header), WireError> {
@@ -185,6 +212,16 @@ mod tests {
         round_trip(Message::Gap(Gap { video: 3, audio: 0 }));
         round_trip(Message::Error(ErrorMsg { message: "no such stream".into() }));
         round_trip(Message::Status(Status { key: "coreRunning".into(), value: "HP9K715".into() }));
+    }
+
+    #[test]
+    fn write_video_matches_write_message() {
+        let v = Video { codec: Codec::Jpeg, keyframe: true, width: 800, height: 600, data: vec![7; 50] };
+        let mut a = Vec::new();
+        write_message(&mut a, &Message::Video(v.clone()), 99).unwrap();
+        let mut b = Vec::new();
+        write_video(&mut b, v.codec, v.keyframe, v.width, v.height, &v.data, 99).unwrap();
+        assert_eq!(a, b);
     }
 
     #[test]

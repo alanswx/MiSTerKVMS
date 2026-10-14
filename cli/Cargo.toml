@@ -16,6 +16,8 @@ path = "src/kvms_alias.rs"
 
 [dependencies]
 kvms-core = { path = "../core" }
+kvms-codec = { path = "../codec" }
+mkvm = { path = "../mkvm" }
 clap = { version = "4", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

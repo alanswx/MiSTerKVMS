@@ -1,0 +1,367 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MiSTerKVMS Capture</title>
+<style>
+  :root {
+    --bg: #f6f6f4; --panel: #ffffff; --text: #1d1d1f; --muted: #6b6b70; --line: #e2e2df;
+    --accent: #c2410c; --accent-text: #ffffff; --ok: #15803d; --warn: #b45309; --bad: #b91c1c;
+    --preview: #111;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #161617; --panel: #202022; --text: #ececee; --muted: #9a9aa2; --line: #333336;
+      --accent: #f97316; --accent-text: #1a1a1a; --ok: #4ade80; --warn: #fbbf24; --bad: #f87171;
+      --preview: #000;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  header { padding: 20px 24px 8px; display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 16px; }
+  header h1 { font-size: 20px; margin: 0; font-weight: 650; }
+  header .sub { color: var(--muted); font-size: 13px; }
+  main { padding: 8px 24px 40px; max-width: 1180px; }
+  h2 { font-size: 15px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 28px 0 12px; font-weight: 600; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 16px; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; overflow: hidden; display: flex; flex-direction: column; }
+  .card .shot { aspect-ratio: 16 / 9; background: var(--preview); display: grid; place-items: center; color: #888; font-size: 13px; position: relative; }
+  .card .shot img { width: 100%; height: 100%; object-fit: contain; display: block; }
+  .card .shot .msg { position: absolute; inset: 0; display: grid; place-items: center; padding: 16px; text-align: center; }
+  .card .body { padding: 12px 14px 14px; display: flex; flex-direction: column; gap: 6px; }
+  .card .title { font-weight: 650; font-size: 16px; display: flex; justify-content: space-between; gap: 8px; align-items: center; }
+  .row { display: flex; flex-wrap: wrap; gap: 4px 14px; color: var(--muted); font-size: 13px; }
+  .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; vertical-align: 1px; }
+  .ok { color: var(--ok); } .warn { color: var(--warn); } .bad { color: var(--bad); }
+  .dot.ok { background: var(--ok); } .dot.warn { background: var(--warn); } .dot.bad { background: var(--bad); }
+  code, .addr { font: 12.5px ui-monospace, "Cascadia Mono", Menlo, monospace; background: var(--bg); padding: 2px 6px; border-radius: 4px; user-select: all; overflow-wrap: anywhere; }
+  .actions { display: flex; gap: 8px; margin-top: 6px; flex-wrap: wrap; }
+  button { font: inherit; font-size: 14px; border-radius: 7px; border: 1px solid var(--line); background: var(--panel); color: var(--text); padding: 6px 12px; cursor: pointer; }
+  button.primary { background: var(--accent); color: var(--accent-text); border-color: transparent; font-weight: 600; }
+  button.danger { color: var(--bad); }
+  button:disabled { opacity: .5; cursor: default; }
+  form.editor { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 16px; display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; }
+  @media (max-width: 760px) { form.editor { grid-template-columns: 1fr; } main, header { padding-left: 16px; padding-right: 16px; } }
+  label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: var(--muted); }
+  input, select { font: inherit; font-size: 14px; color: var(--text); background: var(--bg); border: 1px solid var(--line); border-radius: 7px; padding: 7px 9px; min-width: 0; }
+  .fields { display: flex; flex-direction: column; gap: 12px; }
+  .inline { display: flex; gap: 8px; align-items: end; }
+  .inline > label { flex: 1; }
+  .hint { font-size: 12.5px; color: var(--muted); }
+  .note { padding: 10px 14px; border-radius: 8px; background: var(--panel); border: 1px solid var(--line); }
+  .settings { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 16px; display: flex; flex-direction: column; gap: 12px; max-width: 620px; }
+  .check { flex-direction: row; align-items: center; gap: 8px; color: var(--text); font-size: 14px; }
+  .viewers { margin: 2px 0 0; padding: 0; list-style: none; font-size: 13px; }
+  .viewers li { color: var(--muted); }
+  .viewers li.ctl { color: var(--text); }
+  #toast { position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%); background: var(--text); color: var(--bg); padding: 8px 14px; border-radius: 8px; font-size: 14px; opacity: 0; transition: opacity .2s; pointer-events: none; max-width: calc(100% - 32px); }
+  #toast.show { opacity: 1; }
+</style>
+</head>
+<body>
+<header>
+  <h1>MiSTerKVMS Capture</h1>
+  <span class="sub" id="server"></span>
+</header>
+<main>
+  <section>
+    <h2>Streams</h2>
+    <div id="streams" class="grid"></div>
+    <p id="nostreams" class="note" hidden>No streams yet. Pick a capture card below, check its picture, and add it as a stream.</p>
+    <div class="actions"><button class="primary" id="add">Add stream</button></div>
+  </section>
+
+  <section id="editorSection" hidden>
+    <h2 id="editorTitle">New stream</h2>
+    <form class="editor" id="editor">
+      <div class="fields">
+        <label>Name <input id="fName" required placeholder="MiSTer-SS1"></label>
+        <label>Capture card <select id="fVideo"></select></label>
+        <label>Format <select id="fFormat"></select></label>
+        <label>Audio <select id="fAudio"></select></label>
+        <div class="inline">
+          <label>MiSTer address (mrext Remote) <input id="fMister" placeholder="192.168.1.50"></label>
+          <button type="button" id="test">Test</button>
+        </div>
+        <span class="hint" id="testResult"></span>
+        <div class="actions">
+          <button type="submit" class="primary">Save</button>
+          <button type="button" id="cancel">Cancel</button>
+          <button type="button" class="danger" id="remove" hidden>Remove stream</button>
+        </div>
+      </div>
+      <div>
+        <div class="card"><div class="shot" id="editorShot"><div class="msg">Choose a capture card to see its picture.</div></div></div>
+        <p class="hint">The preview is how you check the card works before dealing with the network.</p>
+      </div>
+    </form>
+  </section>
+
+  <section>
+    <h2>Capture cards</h2>
+    <div id="devices" class="grid"></div>
+    <div class="actions"><button id="refresh">Look for cards again</button></div>
+  </section>
+
+  <section>
+    <h2>Settings</h2>
+    <div class="settings">
+      <label class="check"><input type="checkbox" id="allowLan"> Open this page from other computers</label>
+      <span class="hint">Off: only this PC can open it. Viewers can always connect to the streams.</span>
+      <div class="inline">
+        <label>Setup password (optional) <input id="password" type="password" autocomplete="new-password" placeholder="none"></label>
+        <button type="button" id="savePassword">Set</button>
+      </div>
+      <span class="hint">Asked for before changing anything here. Forgot it? Remove it from <code id="iniPath">capture.ini</code> and restart.</span>
+    </div>
+  </section>
+</main>
+<div id="toast"></div>
+<script>
+"use strict";
+let state = null, devices = null, editing = null;
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const fmt = f => f ? `${f.width}×${f.height} @ ${Math.round(f.fps * 100) / 100} ${f.pixel.toUpperCase()}` : "";
+
+function toast(text) {
+  const t = $("toast");
+  t.textContent = text;
+  t.classList.add("show");
+  clearTimeout(t._h);
+  t._h = setTimeout(() => t.classList.remove("show"), 3500);
+}
+
+function savedPassword() { try { return sessionStorage.getItem("setupPassword") || ""; } catch { return ""; } }
+function rememberPassword(pw) { try { sessionStorage.setItem("setupPassword", pw); } catch {} }
+
+async function api(path, body) {
+  const opts = body === undefined ? {} : { method: "POST", body: JSON.stringify(body), headers: { "Content-Type": "application/json" } };
+  for (let attempt = 0; attempt < 3; attempt++) {
+    if (body !== undefined) opts.headers["X-Setup-Password"] = savedPassword();
+    const r = await fetch(path, opts);
+    if (r.status === 403 && body !== undefined) {
+      const pw = prompt("Setup password:");
+      if (pw === null) throw new Error("cancelled");
+      rememberPassword(pw);
+      continue;
+    }
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(data.error || r.statusText);
+    return data;
+  }
+  throw new Error("wrong password");
+}
+
+async function loadState() {
+  state = await api("/api/state");
+  $("server").textContent = `${state.server} · viewers connect on port ${state.port}`;
+  $("allowLan").checked = state.allowLan;
+  $("password").placeholder = state.passwordSet ? "set (type to change, blank to remove)" : "none";
+  $("iniPath").textContent = state.configDir + (state.configDir.includes("\\") ? "\\" : "/") + "capture.ini";
+  renderStreams();
+}
+
+async function loadDevices() {
+  devices = await api("/api/devices");
+  renderDevices();
+}
+
+function streamCard(s) {
+  const st = s.status, c = s.config;
+  const signal = st.error ? `<span class="bad"><span class="dot bad"></span>${esc(st.error)}</span>`
+    : st.signal ? `<span class="ok"><span class="dot ok"></span>${st.width}×${st.height} ${esc(st.pixel.toUpperCase())}, ${st.measuredFps.toFixed(0)} fps</span>`
+    : `<span class="warn"><span class="dot warn"></span>no signal</span>`;
+  const mister = !c.mister ? `<span class="warn">no MiSTer address</span>`
+    : st.misterConnected ? `<span class="ok">MiSTer ${esc(c.mister)} connected</span>`
+    : `<span class="bad">MiSTer ${esc(c.mister)}: ${esc(st.misterError || "connecting")}</span>`;
+  const audio = !c.audio ? "no audio" : st.audioError ? `<span class="bad">audio: ${esc(st.audioError)}</span>` : `audio ${st.audioRate / 1000} kHz`;
+  const viewers = st.viewers.length
+    ? `<ul class="viewers">${st.viewers.map(v => `<li class="${v.inControl ? "ctl" : ""}">${esc(v.name)}${v.inControl ? " — in control" : ""}${v.width ? ` · ${v.width}×${v.height}` : ""}</li>`).join("")}</ul>`
+    : `<span class="row">nobody watching</span>`;
+  return `<div class="card" data-name="${esc(c.name)}">
+    <div class="shot"><img alt="" data-src="/preview/stream/${encodeURIComponent(c.name)}"><div class="msg" hidden></div></div>
+    <div class="body">
+      <div class="title">${esc(c.name)}<button data-edit="${esc(c.name)}">Edit</button></div>
+      <div class="row">${signal}</div>
+      <div class="row">${mister}<span>${audio}</span></div>
+      <div class="row"><span class="addr">${esc(s.address)}</span></div>
+      ${viewers}
+    </div></div>`;
+}
+
+function renderStreams() {
+  const box = $("streams");
+  const open = new Set([...box.querySelectorAll(".card")].map(c => c.dataset.name));
+  const names = state.streams.map(s => s.config.name);
+  $("nostreams").hidden = names.length > 0;
+  // Keep running previews: only redraw the text parts of existing cards.
+  if (names.length === open.size && names.every(n => open.has(n))) {
+    for (const s of state.streams) {
+      const card = [...box.children].find(c => c.dataset.name === s.config.name);
+      const fresh = document.createElement("div");
+      fresh.innerHTML = streamCard(s);
+      card.querySelector(".body").replaceWith(fresh.querySelector(".body"));
+    }
+  } else {
+    box.innerHTML = state.streams.map(streamCard).join("");
+    box.querySelectorAll("img[data-src]").forEach(startPreview);
+  }
+  box.querySelectorAll("[data-edit]").forEach(b => b.onclick = () => edit(b.dataset.edit));
+}
+
+function startPreview(img) {
+  const msg = img.parentElement.querySelector(".msg");
+  img.onerror = () => {
+    img.hidden = true; msg.hidden = false; msg.textContent = "no picture yet";
+    setTimeout(() => { img.hidden = false; msg.hidden = true; img.src = img.dataset.src + "?t=" + Date.now(); }, 3000);
+  };
+  img.src = img.dataset.src;
+}
+
+function renderDevices() {
+  const used = new Set((state?.streams || []).map(s => s.config.video));
+  const box = $("devices");
+  if (!devices.video.length) { box.innerHTML = `<p class="note">No capture cards found. Plug one in and press “Look for cards again”.</p>`; return; }
+  box.innerHTML = devices.video.map(d => {
+    const stream = (state?.streams || []).find(s => s.config.video === d.id);
+    return `<div class="card">
+      <div class="shot" id="dev-${btoa(unescape(encodeURIComponent(d.id))).replace(/[^a-z0-9]/gi, "")}"><div class="msg">${stream ? `Shown above as “${esc(stream.config.name)}”` : `<button data-preview="${esc(d.id)}">Show picture</button>`}</div></div>
+      <div class="body">
+        <div class="title">${esc(d.name)}${stream ? "" : `<button class="primary" data-use="${esc(d.id)}">Add as stream</button>`}</div>
+        <div class="row"><span>${d.formats.length ? `best: ${fmt(d.best)}` : `<span class="warn">formats unavailable (in use by another app?)</span>`}</span></div>
+        <div class="row"><span>audio: ${esc(d.audio || "none found")}</span></div>
+      </div></div>`;
+  }).join("");
+  box.querySelectorAll("[data-preview]").forEach(b => b.onclick = () => {
+    const shot = b.closest(".shot");
+    shot.innerHTML = `<img alt=""><div class="msg">opening…</div>`;
+    const img = shot.querySelector("img"), msg = shot.querySelector(".msg");
+    img.onload = () => { img.hidden = false; msg.hidden = true; };
+    img.onerror = () => { img.hidden = true; msg.hidden = false; msg.textContent = "Can't open this card (in use by another app, e.g. OBS?)"; };
+    img.src = "/preview/device?id=" + encodeURIComponent(b.dataset.preview);
+  });
+  box.querySelectorAll("[data-use]").forEach(b => b.onclick = () => edit(null, b.dataset.use));
+}
+
+function fillSelect(sel, items, value) {
+  sel.innerHTML = items.map(([v, label]) => `<option value="${esc(v)}">${esc(label)}</option>`).join("");
+  sel.value = value;
+}
+
+function deviceFormats(id) {
+  const d = devices.video.find(d => d.id === id);
+  return [["", d && d.best ? `Automatic (${fmt(d.best)})` : "Automatic"], ...(d ? d.formats.map(f => [JSON.stringify(f), fmt(f)]) : [])];
+}
+
+function edit(name, deviceId) {
+  editing = name;
+  const s = name ? state.streams.find(s => s.config.name === name).config : null;
+  const id = s ? s.video : deviceId || (devices.video[0] && devices.video[0].id) || "";
+  const d = devices.video.find(d => d.id === id);
+  $("editorTitle").textContent = name ? `Edit ${name}` : "New stream";
+  $("fName").value = s ? s.name : `MiSTer-${(state.streams.length + 1)}`;
+  fillSelect($("fVideo"), devices.video.map(d => [d.id, d.name]), id);
+  fillSelect($("fFormat"), deviceFormats(id), s && s.format ? JSON.stringify(s.format) : "");
+  fillSelect($("fAudio"), [["", "None"], ...devices.audio.map(a => [a.name, a.name])], s ? s.audio : (d && d.audio) || "");
+  $("fMister").value = s ? s.mister : "";
+  $("testResult").textContent = "";
+  $("remove").hidden = !name;
+  $("editorSection").hidden = false;
+  editorPreview();
+  $("editorSection").scrollIntoView({ behavior: "smooth" });
+}
+
+function editorPreview() {
+  const shot = $("editorShot");
+  const id = $("fVideo").value;
+  const stream = state.streams.find(s => s.config.video === id);
+  const src = stream ? `/preview/stream/${encodeURIComponent(stream.config.name)}` : `/preview/device?id=${encodeURIComponent(id)}`;
+  shot.innerHTML = `<img alt=""><div class="msg">opening…</div>`;
+  const img = shot.querySelector("img"), msg = shot.querySelector(".msg");
+  img.onload = () => { img.hidden = false; msg.hidden = true; };
+  img.onerror = () => { img.hidden = true; msg.hidden = false; msg.textContent = "Can't open this card (in use by another app, e.g. OBS?)"; };
+  if (id) img.src = src;
+}
+
+function closeEditor() {
+  $("editorSection").hidden = true;
+  $("editorShot").innerHTML = `<div class="msg">Choose a capture card to see its picture.</div>`;
+  editing = null;
+}
+
+async function saveStreams(list) {
+  await api("/api/streams", { streams: list });
+  await loadState();
+  renderDevices();
+}
+
+$("fVideo").onchange = () => {
+  const id = $("fVideo").value, d = devices.video.find(d => d.id === id);
+  fillSelect($("fFormat"), deviceFormats(id), "");
+  if (d && d.audio) $("fAudio").value = d.audio;
+  editorPreview();
+};
+$("add").onclick = () => edit(null);
+$("cancel").onclick = closeEditor;
+$("refresh").onclick = () => loadDevices().then(() => toast("Cards updated"));
+$("test").onclick = async () => {
+  $("testResult").textContent = "Testing…";
+  const r = await api(`/api/test-mister?host=${encodeURIComponent($("fMister").value)}&port=8182`);
+  $("testResult").innerHTML = r.ok ? `<span class="ok">mrext Remote answered.</span>` : `<span class="bad">${esc(r.error)}</span>`;
+};
+$("remove").onclick = async () => {
+  if (!confirm(`Remove the stream “${editing}”? Viewers watching it are disconnected.`)) return;
+  try {
+    await saveStreams(state.streams.map(s => s.config).filter(c => c.name !== editing));
+    closeEditor();
+    toast("Stream removed");
+  } catch (e) { if (e.message !== "cancelled") toast(e.message); }
+};
+$("editor").onsubmit = async ev => {
+  ev.preventDefault();
+  const id = $("fVideo").value, d = devices.video.find(d => d.id === id);
+  const old = editing ? state.streams.find(s => s.config.name === editing).config : {};
+  const config = {
+    ...old,
+    name: $("fName").value.trim(),
+    video: id,
+    videoName: d ? d.name : "",
+    format: $("fFormat").value ? JSON.parse($("fFormat").value) : null,
+    audio: $("fAudio").value,
+    mister: $("fMister").value.trim(),
+    misterPort: old.misterPort || 8182,
+    quality: old.quality || 85,
+  };
+  const list = state.streams.map(s => s.config).filter(c => c.name !== editing);
+  list.push(config);
+  try {
+    await saveStreams(list);
+    closeEditor();
+    toast("Saved");
+  } catch (e) { if (e.message !== "cancelled") toast(e.message); }
+};
+$("allowLan").onchange = async () => {
+  try { await api("/api/settings", { allowLan: $("allowLan").checked }); toast("Saved"); }
+  catch (e) { $("allowLan").checked = !$("allowLan").checked; if (e.message !== "cancelled") toast(e.message); }
+};
+$("savePassword").onclick = async () => {
+  const pw = $("password").value;
+  try {
+    await api("/api/settings", { password: pw });
+    rememberPassword(pw);
+    $("password").value = "";
+    await loadState();
+    toast(pw ? "Password set" : "Password removed");
+  } catch (e) { if (e.message !== "cancelled") toast(e.message); }
+};
+
+(async () => {
+  try { await loadState(); await loadDevices(); }
+  catch (e) { toast("Can't reach the capture server: " + e.message); }
+  setInterval(() => loadState().catch(() => {}), 2000);
+})();
+</script>
+</body>
+</html>

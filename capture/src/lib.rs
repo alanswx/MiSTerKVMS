@@ -11,6 +11,7 @@ pub mod audio;
 mod clock;
 #[cfg(windows)]
 mod mf;
+pub mod pattern;
 
 use std::fmt;
 use std::time::Duration;
@@ -127,20 +128,25 @@ pub enum Output {
 /// List video capture devices and their formats.
 pub fn devices() -> Result<Vec<VideoDevice>, CaptureError> {
     #[cfg(windows)]
-    {
-        mf::devices()
-    }
+    let mut list = mf::devices()?;
     #[cfg(not(windows))]
-    {
-        Ok(Vec::new())
+    let mut list = Vec::new();
+    if pattern::listed() {
+        list.push(pattern::device());
     }
+    Ok(list)
 }
 
 /// An open video capture. Frames are read on the caller's thread.
 pub struct VideoCapture {
-    #[cfg(windows)]
-    inner: mf::Reader,
+    inner: Inner,
     format: VideoFormat,
+}
+
+enum Inner {
+    #[cfg(windows)]
+    Mf(mf::Reader),
+    Pattern(pattern::Pattern),
 }
 
 impl VideoCapture {
@@ -148,14 +154,18 @@ impl VideoCapture {
     /// matches) in `format`. With `format` None the best format is chosen:
     /// largest, then fastest, then MJPEG over raw.
     pub fn open(id: &str, format: Option<VideoFormat>, output: Output) -> Result<Self, CaptureError> {
+        if id == pattern::ID {
+            let (p, format) = pattern::Pattern::open(output);
+            return Ok(Self { inner: Inner::Pattern(p), format });
+        }
         #[cfg(windows)]
         {
-            let (inner, format) = mf::Reader::open(id, format, output)?;
-            Ok(Self { inner, format })
+            let (reader, format) = mf::Reader::open(id, format, output)?;
+            Ok(Self { inner: Inner::Mf(reader), format })
         }
         #[cfg(not(windows))]
         {
-            let _ = (id, format, output);
+            let _ = (format, output);
             Err(CaptureError::Unsupported("video capture isn't available on this system yet".into()))
         }
     }
@@ -168,14 +178,10 @@ impl VideoCapture {
     /// The next frame, or None after `timeout` without one (no signal, or a
     /// card that only sends on change).
     pub fn next_frame(&mut self, timeout: Duration) -> Result<Option<VideoFrame>, CaptureError> {
-        #[cfg(windows)]
-        {
-            self.inner.next_frame(timeout)
-        }
-        #[cfg(not(windows))]
-        {
-            let _ = timeout;
-            Err(CaptureError::Unsupported("video capture isn't available on this system yet".into()))
+        match &mut self.inner {
+            #[cfg(windows)]
+            Inner::Mf(reader) => reader.next_frame(timeout),
+            Inner::Pattern(p) => Ok(p.next_frame(timeout)),
         }
     }
 }
