@@ -144,8 +144,7 @@ pub fn devices() -> Result<Vec<VideoDevice>, CaptureError> {
         let ds = ds::devices(&working).unwrap_or_default();
         let mut list: Vec<VideoDevice> = mf.iter().filter(|d| !d.formats.is_empty()).cloned().collect();
         for d in mf.into_iter().filter(|d| d.formats.is_empty()) {
-            let via_ds = format!("{}{}", ds::PREFIX, d.id);
-            if !ds.iter().any(|x| x.id.eq_ignore_ascii_case(&via_ds)) {
+            if !ds.iter().any(|x| x.id.strip_prefix(ds::PREFIX).is_some_and(|p| ds::same_device(p, &d.id))) {
                 list.push(d);
             }
         }

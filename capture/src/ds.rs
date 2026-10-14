@@ -258,12 +258,26 @@ unsafe fn graph() -> Result<(IGraphBuilder, ICaptureGraphBuilder2), CaptureError
     Ok((graph, builder))
 }
 
+/// The device instance in a device path, without the interface class:
+/// Media Foundation and DirectShow name the same USB stick
+/// `\\?\usb#vid_…#7&…&0000#{camera class}\global` and `…#{capture class}\global`.
+pub fn same_device(a: &str, b: &str) -> bool {
+    fn instance(p: &str) -> String {
+        let p = p.to_lowercase();
+        match p.rfind("#{") {
+            Some(i) => p[..i].to_string(),
+            None => p,
+        }
+    }
+    instance(a) == instance(b)
+}
+
 /// Video capture devices DirectShow sees, with their formats. `skip` lists
 /// device paths already handled by Media Foundation.
 pub fn devices(skip: &[String]) -> Result<Vec<VideoDevice>, CaptureError> {
     let mut out = Vec::new();
     for d in enumerate(&CLSID_VideoInputDeviceCategory)? {
-        if skip.iter().any(|s| s.eq_ignore_ascii_case(&d.path)) {
+        if skip.iter().any(|s| same_device(s, &d.path)) {
             continue;
         }
         let formats = unsafe {
@@ -667,4 +681,15 @@ pub fn describe() -> String {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn same_device_ignores_interface_class() {
+        let mf = r"\\?\usb#vid_345f&pid_2131&mi_00#7&30e00b3f&0&0000#{e5323777-f976-4f5b-9b55-b94699c46e44}\global";
+        let ds = r"\\?\USB#vid_345f&pid_2131&mi_00#7&30e00b3f&0&0000#{65e8773d-8f56-11d0-a3b9-00a0c9223196}\global";
+        assert!(super::same_device(mf, ds));
+        assert!(!super::same_device(mf, r"\\?\usb#vid_345f&pid_2131&mi_00#7&11111111&0&0000#{65e8773d-8f56-11d0-a3b9-00a0c9223196}\global"));
+    }
 }
