@@ -178,10 +178,12 @@ jobs:
         shell: pwsh
         run: scripts/build-windows.ps1 -Package -Version $env:VERSION
 
+      # Wrapped in a normal artifact: download-artifact unzips an unwrapped
+      # .zip, which would spill the app's files into the release.
       - uses: actions/upload-artifact@v7
         with:
+          name: MiSTerKVMS-${{ env.VERSION }}-win-x64
           path: build/MiSTerKVMS-${{ env.VERSION }}-win-x64.zip
-          archive: false
 
       # The capture server on its own, for the setup page's Update button.
       - uses: actions/upload-artifact@v7
@@ -264,7 +266,13 @@ jobs:
 
           NDI® is a registered trademark of Vizrt NDI AB.
           EOF
-          gh release create "v$VERSION" dist/* \
+          # The release files themselves; a folder means an artifact got unpacked.
+          if [ -n "$(find dist -mindepth 1 -type d)" ]; then
+            echo "dist/ has folders (an artifact was unpacked):"; find dist | head -40; exit 1
+          fi
+          mapfile -t files < <(find dist -maxdepth 1 -type f | sort)
+          printf 'Publishing %s\n' "${files[@]}"
+          gh release create "v$VERSION" "${files[@]}" \
             --target "$GITHUB_SHA" --title "MiSTerKVMS $VERSION" \
             --notes-file "$RUNNER_TEMP/notes.md" --generate-notes
 
