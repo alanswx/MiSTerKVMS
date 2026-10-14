@@ -155,9 +155,53 @@ One TCP connection per viewer per stream, `TCP_NODELAY`. No TLS on the LAN.
 
 | OS | Runs as | Notes |
 |---|---|---|
-| Windows | Windows service, at boot | Spike C3 checks that video **and audio** capture work from a service (session 0). If audio doesn't, fall back to a per-user background process started at login. |
+| Windows | Windows service (LocalSystem), at boot | Works from session 0: C3 below. Installed from the setup page. |
 | macOS | Background agent at login (`SMAppService`, registered by the app) | Camera/Microphone permission only exists in a user session, so not a boot-time daemon. A headless Mac needs auto-login. |
 | Linux | systemd system service | Service user in the `video` and `audio` groups. |
+
+#### Windows service: what C3 found (October 2026, DANIHTPC)
+
+- **Video from session 0 works** on both cards: UGREEN 25773 (Media
+  Foundation, 1920×1080 MJPEG at 30) and AVerMedia GC573 (DirectShow,
+  1920×1080 NV12 at 60), same rates as from a normal window. No fallback to
+  a login-time process was needed, so the service stays the design.
+- **Audio from session 0 opens and delivers** on both (WASAPI for the
+  UGREEN, the GC573's DirectShow pin): 48 kHz stereo, 5.0 s of audio per
+  5 s. Windows feeds *silence* rather than an error when microphone privacy
+  blocks an app, so the content check matters; device-wide microphone
+  access (the setting that applies to LocalSystem) is on. Both MiSTers ran
+  a silent core during the test, so non-silent audio from the service
+  still needs one check with sound: `misterkvms-cli stream
+  mkvm://127.0.0.1/<stream>` reports `audio_peak` (0 = silence). The test
+  pattern's beep (peak 12000) shows the server → viewer path carries
+  audio.
+- **Power throttling:** Windows treats a windowless process as background
+  (EcoQoS); the GC573's JPEG encoding fell from 57 to 26 fps in the
+  service. The server opts out (`SetProcessInformation`,
+  `ProcessPowerThrottling`).
+- **Encoding raw cards:** one encoder thread delivered 57.4 fps from the
+  GC573 (an encode averages ~11 ms but sometimes runs past 16.7 ms, and the
+  next frame replaced the waiting one, uncounted). Three encoder threads
+  per stream, frames delivered in order: **60.0 fps** (1200/1200 frames in
+  20 s), frame age 25 → 18 ms. Lost frames are now counted (`skipped`).
+  Next step if CPU matters: encode NV12 directly as 4:2:0 instead of
+  NV12 → BGRA → 4:4:4 (the card's chroma is 4:2:0 anyway; needs the
+  BT.709 limited → JPEG full-range conversion done right).
+- **How it's set up:** double-click `misterkvms-capture.exe` (opens the
+  page; a second copy just opens the running one's page). "Run in the
+  background" → *Install & start service*: a UAC prompt runs
+  `misterkvms-capture service install`, which registers the service
+  (`serve --service --config <dir>`, automatic start, restart on failure),
+  adds firewall rules (TCP 5970, TCP 5971, UDP 5353, for that program), and
+  lets Users edit the config folder (the service writes it as SYSTEM). The
+  window's copy then exits; the service retries the ports until it has
+  them; the page reconnects. From the service, Restart/Stop/Uninstall run
+  in a helper process (already LocalSystem, no prompt). The service logs to
+  `capture.log` in the config folder. CLI: `misterkvms-capture service
+  install|uninstall|start|stop|restart|status`.
+- **The service runs the exe where it was installed from;** keep it there
+  (the page shows the path). An installer (C6) would put it in Program
+  Files.
 
 ### 5.4 Setup page and tray
 
@@ -176,7 +220,11 @@ One TCP connection per viewer per stream, `TCP_NODELAY`. No TLS on the LAN.
   optional password protects the configuration (changing streams and
   settings), wherever the page is opened from. Both live in `capture.ini`
   (§5.6): `[setup] allow_lan = false` and `password =`. Forgot the password?
-  Delete the line in `capture.ini` and restart.
+  Delete the line in `capture.ini` and restart. LAN access and the service
+  can only be changed from the capture PC itself.
+- **Test pattern:** "Show a test pattern" (`[setup] test_pattern`) adds a
+  card with moving rainbow bars and a beep every second (its own card
+  audio), to try streams, viewers, sound and recording without a MiSTer.
 - The tray icon only starts/stops/restarts the service and opens the page.
 
 ### 5.5 Ports
@@ -316,6 +364,14 @@ scaling, crop, recording. Changed:
 | C10 | Release; NDI removed | server and apps in releases; NDI code, SETUP-NDI and release notes removed; profiles migrate |
 | Later | OBS plugin, Raspberry Pi capture box, QUIC + away from home, Mac App Store build | |
 
+Status (14 October 2026): **C3** done on Windows (both cards, video and
+audio from the service; audio content still to be checked with a MiSTer
+making sound). **C5**: the service is in, set up from the page.
+**C6**: the setup page does streams, previews, the service, LAN access,
+the password and the test pattern; the tray icon and the installer are
+still to do. Recording from streams and local cards works in the apps'
+recorder and `misterkvms-cli record --stream/--local`.
+
 Rough size: C0–C4 about two weeks; C5–C7 about two weeks; C8–C10 about two
 more. The biggest risks are C3 (cards, and capture from a Windows service)
 and C8 (hardware codecs on three OSes).
@@ -335,8 +391,8 @@ and C8 (hardware codecs on three OSes).
 - **AVerMedia GC573:** on Windows it works through DirectShow (Media
   Foundation can't open it), video and its audio pin. Asking DirectShow to
   convert its frames crashes inside the card's filters, so frames are taken
-  as the card sends them. Raw 1080p60 JPEG encoding takes ~17 ms a frame:
-  encode on two threads.
+  as the card sends them. Raw 1080p60 JPEG encoding takes 10–17 ms a frame:
+  three encoder threads per stream (§5.3, C3).
 - **Backends, not plugins:** new kinds of cards are new backends compiled
   into `capture` (vendor SDKs such as DeckLink would be loaded at run time,
   like NDI was). A plugin interface only if outside contributors need one.
