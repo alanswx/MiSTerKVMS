@@ -1,0 +1,14 @@
+[package]
+name = "kvms-codec"
+description = "Picture encoding, decoding, conversion and scaling for MiSTerKVMS (shared by the capture server and the apps)."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "kvms_codec"
+
+[dependencies]
+zune-jpeg = "0.5"
+zune-core = "0.5"
+jpeg-encoder = { version = "0.6", features = ["simd"] }
