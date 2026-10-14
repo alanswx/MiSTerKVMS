@@ -184,13 +184,17 @@ One TCP connection per viewer per stream, `TCP_NODELAY`. No TLS on the LAN.
   next frame replaced the waiting one, uncounted). Three encoder threads
   per stream, frames delivered in order: **60.0 fps** (1200/1200 frames in
   20 s), frame age 25 → 18 ms. Lost frames are now counted (`skipped`).
-  Next step if CPU matters: encode NV12 directly as 4:2:0 instead of
-  NV12 → BGRA → 4:4:4 (the card's chroma is 4:2:0 anyway; needs the
-  BT.709 limited → JPEG full-range conversion done right).
+  Native-size pictures of raw cards are then encoded straight from the
+  card's YUV (BT.709 limited → JPEG BT.601 full range in one step), keeping
+  its 4:2:0 / 4:2:2 chroma, since finer chroma than the card sent adds bytes,
+  not detail: 1080p encode 28.7 → 15.2 ms, 25% smaller
+  (`codec/examples/jpeg_bench`); the GC573 stream went 48 → 36 Mbit/s,
+  frame age 18 → 15 ms. RGB cards and scaled pictures stay 4:4:4.
 - **How it's set up:** double-click `misterkvms-capture.exe` (opens the
   page; a second copy just opens the running one's page). "Run in the
   background" → *Install & start service*: a UAC prompt runs
-  `misterkvms-capture service install`, which registers the service
+  `misterkvms-capture service install`, which copies the program to Program
+  Files, registers the service
   (`serve --service --config <dir>`, automatic start, restart on failure),
   adds firewall rules (TCP 5970, TCP 5971, UDP 5353, for that program), and
   lets Users edit the config folder (the service writes it as SYSTEM). The
@@ -199,9 +203,10 @@ One TCP connection per viewer per stream, `TCP_NODELAY`. No TLS on the LAN.
   in a helper process (already LocalSystem, no prompt). The service logs to
   `capture.log` in the config folder. CLI: `misterkvms-capture service
   install|uninstall|start|stop|restart|status`.
-- **The service runs the exe where it was installed from;** keep it there
-  (the page shows the path). An installer (C6) would put it in Program
-  Files.
+- **Install copies the program to `%ProgramFiles%\MiSTerKVMS\Capture`** and
+  the service runs it from there, so the download can go. Double-clicking a
+  newer download and pressing Start (or Install) replaces the installed copy.
+  Uninstall removes it; the config folder stays.
 
 ### 5.4 Setup page and tray
 
