@@ -358,6 +358,7 @@ impl Ui {
                 recording_seconds: None,
                 last_recording: None,
                 recording_error: None,
+                stream: None,
             }),
             updating_list: Cell::new(false),
             title,

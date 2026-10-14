@@ -1,5 +1,5 @@
 //! List capture devices and, for each, try to read a few frames.
-//! `cargo run -p kvms-capture --example probe [seconds]`
+//! `cargo run -p kvms-capture --example cards [seconds]`
 
 use std::time::{Duration, Instant};
 

@@ -33,6 +33,7 @@ pub fn is_card_audio(id_or_name: &str) -> bool {
 /// Input devices (microphones, capture card audio, ...), then audio that
 /// comes from a card's own pin.
 pub fn audio_devices() -> Vec<AudioDevice> {
+    #[cfg_attr(not(windows), allow(unused_mut))]
     let mut list: Vec<AudioDevice> = match cpal::default_host().input_devices() {
         Ok(devices) => devices
             .filter_map(|d| {

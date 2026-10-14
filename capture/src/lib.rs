@@ -4,12 +4,14 @@
 //! way (docs/CAPTURE-SERVER.md §1, §3).
 //!
 //! Video backends: Media Foundation (Windows), with DirectShow for cards
-//! Media Foundation can't open (AVerMedia GC573 and other PCIe cards).
-//! AVFoundation (macOS) and V4L2 (Linux) come later; on those systems
-//! `devices()` is empty for now.
+//! Media Foundation can't open (AVerMedia GC573 and other PCIe cards);
+//! AVFoundation (macOS). V4L2 (Linux) comes later; there `devices()` is
+//! empty for now.
 //! Audio goes through `cpal` everywhere.
 
 pub mod audio;
+#[cfg(target_os = "macos")]
+mod avf;
 mod clock;
 #[cfg(windows)]
 mod ds;
@@ -150,7 +152,9 @@ pub fn devices() -> Result<Vec<VideoDevice>, CaptureError> {
         list.extend(ds);
         list
     };
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
+    let mut list = avf::devices()?;
+    #[cfg(not(any(windows, target_os = "macos")))]
     let mut list = Vec::new();
     if pattern::listed() {
         list.push(pattern::device());
@@ -170,6 +174,8 @@ enum Inner {
     Mf(mf::Reader),
     #[cfg(windows)]
     Ds(ds::Reader),
+    #[cfg(target_os = "macos")]
+    Avf(avf::Reader),
     Pattern(pattern::Pattern),
 }
 
@@ -218,7 +224,14 @@ impl VideoCapture {
                 Err(e) => ds_open(id).map_err(|_| e),
             }
         }
-        #[cfg(not(windows))]
+        #[cfg(target_os = "macos")]
+        {
+            // Card audio on macOS is a normal audio input (CoreAudio).
+            let _ = audio;
+            let (reader, format) = avf::Reader::open(id, format, output)?;
+            Ok(Self { inner: Inner::Avf(reader), format, audio: None })
+        }
+        #[cfg(not(any(windows, target_os = "macos")))]
         {
             let _ = (format, output, audio);
             Err(CaptureError::Unsupported("video capture isn't available on this system yet".into()))
@@ -238,16 +251,21 @@ impl VideoCapture {
             Inner::Mf(reader) => reader.next_frame(timeout),
             #[cfg(windows)]
             Inner::Ds(reader) => reader.next_frame(timeout),
+            #[cfg(target_os = "macos")]
+            Inner::Avf(reader) => reader.next_frame(timeout),
             Inner::Pattern(p) => Ok(p.next_frame(timeout)),
         }
     }
 }
 
 /// DirectShow diagnostics (audio inputs, pins per video device).
-#[cfg(windows)]
 #[doc(hidden)]
 pub fn describe_directshow() -> String {
-    ds::describe()
+    #[cfg(windows)]
+    return ds::describe();
+    #[cfg(not(windows))]
+    "DirectShow is Windows-only
+".into()
 }
 
 /// Pick the format to use when none was chosen: 1920x1080 (what MiSTer
