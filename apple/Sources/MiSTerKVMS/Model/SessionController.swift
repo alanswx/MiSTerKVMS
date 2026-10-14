@@ -52,6 +52,9 @@ final class SessionController: ObservableObject {
     var statsVisible: Bool { state.statsVisible }
     var lastRecording: URL? { state.lastRecording.map { URL(fileURLWithPath: $0) } }
     var recordingError: String? { state.recordingError }
+    /// Capture server hosts: the stream connection and who has control.
+    var stream: StreamState? { state.stream }
+    var someoneElseInControl: Bool { state.someoneElseInControl }
 
     var muted: Bool {
         get { state.muted }
@@ -223,8 +226,11 @@ final class SessionController: ObservableObject {
 
     // MARK: - Input
 
-    func startCapture() {
+    /// Capture keyboard and mouse. On a stream someone else controls, only
+    /// Take Control (`force`) does.
+    func startCapture(force: Bool = false) {
         guard isConnected, !capturing, let view = captureView else { return }
+        guard force || !someoneElseInControl else { return }
         capture.session = core.inputSession()
         capture.start(over: view)
         rawMouseActive = capture.rawActive
@@ -238,6 +244,25 @@ final class SessionController: ObservableObject {
 
     func openMisterMenu() {
         core.openMenu()
+    }
+
+    // MARK: - Capture server streams
+
+    /// Take control of the stream from whoever has it, and capture.
+    func takeControl() {
+        core.takeControl()
+        startCapture(force: true)
+    }
+
+    /// "auto", "best", "balanced" or "low"; remembered for the host.
+    func setQuality(_ quality: String) {
+        core.setQuality(quality: quality)
+    }
+
+    /// The name other viewers of a stream see.
+    var viewerName: String {
+        get { core.viewerName() }
+        set { core.setViewerName(name: newValue) }
     }
 }
 

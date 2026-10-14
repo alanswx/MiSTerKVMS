@@ -50,6 +50,24 @@ struct MiSTerKVMSApp: App {
                 Toggle("Pin Stats Overlay", isOn: $controller.statsPinned)
                     .keyboardShortcut("i", modifiers: [.command, .shift])
             }
+            CommandGroup(after: .toolbar) {
+                // Capture server streams: the size and codec the server sends.
+                Picker("Quality", selection: Binding(
+                    get: { controller.profile?.quality.isEmpty == false ? controller.profile!.quality : "auto" },
+                    set: { controller.setQuality($0) }
+                )) {
+                    Text("Automatic").tag("auto")
+                    Text("Best (full size)").tag("best")
+                    Text("Balanced (up to 1080p)").tag("balanced")
+                    Text("Low (up to 720p)").tag("low")
+                }
+                .disabled(controller.profile?.sourceKind != "capture")
+                Divider()
+            }
+        }
+
+        Settings {
+            SettingsView(controller: controller)
         }
 
         Window("About MiSTerKVMS", id: AboutView.windowID) {

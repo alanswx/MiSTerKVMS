@@ -30,7 +30,7 @@ struct ContentView: View {
                     ContentUnavailableView {
                         Label("No Hosts", systemImage: "display.2")
                     } description: {
-                        Text("Add a MiSTer and the NDI source that carries its video.")
+                        Text("Add a MiSTer: a stream from MiSTerKVMS Capture, or a capture card on this Mac.")
                     } actions: {
                         Button("Add Host…") { editing = HostProfile.make() }
                     }
@@ -83,7 +83,7 @@ private struct HostRow: View {
                     Image(systemName: "dot.radiowaves.left.and.right").foregroundStyle(.green)
                 }
             }
-            Text(profile.misterHost.isEmpty ? "No address" : profile.misterHost)
+            Text(profile.subtitle)
                 .font(.caption).foregroundStyle(.secondary)
         }
         .padding(.vertical, 2)

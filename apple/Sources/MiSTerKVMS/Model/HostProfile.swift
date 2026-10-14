@@ -55,3 +55,44 @@ final class ProfileStore: ObservableObject {
         core.markLegacyImported()
     }
 }
+
+extension HostProfile {
+    /// Where video comes from: "capture" (a capture server stream), "local"
+    /// (a card on this Mac) or "ndi". An empty `source` is inferred from
+    /// which field is filled, as the core does.
+    var sourceKind: String {
+        switch source {
+        case "capture", "local", "ndi": source
+        default:
+            if !stream.trimmingCharacters(in: .whitespaces).isEmpty { "capture" }
+            else if !localVideo.isEmpty { "local" }
+            else { "ndi" }
+        }
+    }
+
+    /// The stream's name, from its address (`mkvm://pc/name`).
+    var streamName: String {
+        var path = Substring(stream)
+        if let scheme = path.range(of: "://") { path = path[scheme.upperBound...] }
+        guard let slash = path.firstIndex(of: "/") else { return "" }
+        let name = path[path.index(after: slash)...].trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        return name.removingPercentEncoding ?? name
+    }
+
+    /// The host list's second line.
+    var subtitle: String {
+        switch sourceKind {
+        case "capture": streamName.isEmpty ? "No stream chosen" : "Stream \(streamName)"
+        case "local": "Capture card on this Mac"
+        default: misterHost.isEmpty ? "No address" : misterHost
+        }
+    }
+}
+
+extension ControllerState {
+    /// A capture server stream that someone else controls.
+    var someoneElseInControl: Bool {
+        guard let stream else { return false }
+        return !stream.haveControl && !stream.holder.isEmpty
+    }
+}
