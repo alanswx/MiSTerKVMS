@@ -3,12 +3,16 @@
 //! apps' "capture card on this computer" source, so both see cards the same
 //! way (docs/CAPTURE-SERVER.md §1, §3).
 //!
-//! Video backends: Media Foundation (Windows). AVFoundation (macOS) and V4L2
-//! (Linux) come later; on those systems `devices()` is empty for now.
+//! Video backends: Media Foundation (Windows), with DirectShow for cards
+//! Media Foundation can't open (AVerMedia GC573 and other PCIe cards).
+//! AVFoundation (macOS) and V4L2 (Linux) come later; on those systems
+//! `devices()` is empty for now.
 //! Audio goes through `cpal` everywhere.
 
 pub mod audio;
 mod clock;
+#[cfg(windows)]
+mod ds;
 #[cfg(windows)]
 mod mf;
 pub mod pattern;
@@ -18,7 +22,7 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
-pub use audio::{audio_devices, AudioCapture, AudioChunk};
+pub use audio::{audio_devices, is_card_audio, AudioCapture, AudioChunk, AudioDevice, CARD_AUDIO};
 pub use clock::now_100ns;
 
 /// How a card delivers pixels.
@@ -121,14 +125,31 @@ pub enum Output {
     /// Frames as the card sends them (MJPEG stays compressed). For the
     /// server, which passes MJPEG through untouched.
     Native,
-    /// Always BGRA, decoded or converted by the OS. For local viewing.
+    /// BGRA if the OS can convert cheaply and safely (Media Foundation);
+    /// some backends (DirectShow) still hand out the card's own format, so
+    /// callers must handle every `PixelFormat`. For local viewing.
     Bgra,
 }
 
 /// List video capture devices and their formats.
 pub fn devices() -> Result<Vec<VideoDevice>, CaptureError> {
+    // Each card once: Media Foundation's entry when it can open the card,
+    // DirectShow's otherwise (and for cards only DirectShow sees).
     #[cfg(windows)]
-    let mut list = mf::devices()?;
+    let mut list = {
+        let mf = mf::devices()?;
+        let working: Vec<String> = mf.iter().filter(|d| !d.formats.is_empty()).map(|d| d.id.clone()).collect();
+        let ds = ds::devices(&working).unwrap_or_default();
+        let mut list: Vec<VideoDevice> = mf.iter().filter(|d| !d.formats.is_empty()).cloned().collect();
+        for d in mf.into_iter().filter(|d| d.formats.is_empty()) {
+            let via_ds = format!("{}{}", ds::PREFIX, d.id);
+            if !ds.iter().any(|x| x.id.eq_ignore_ascii_case(&via_ds)) {
+                list.push(d);
+            }
+        }
+        list.extend(ds);
+        list
+    };
     #[cfg(not(windows))]
     let mut list = Vec::new();
     if pattern::listed() {
@@ -141,11 +162,14 @@ pub fn devices() -> Result<Vec<VideoDevice>, CaptureError> {
 pub struct VideoCapture {
     inner: Inner,
     format: VideoFormat,
+    audio: Option<AudioCapture>,
 }
 
 enum Inner {
     #[cfg(windows)]
     Mf(mf::Reader),
+    #[cfg(windows)]
+    Ds(ds::Reader),
     Pattern(pattern::Pattern),
 }
 
@@ -154,18 +178,49 @@ impl VideoCapture {
     /// matches) in `format`. With `format` None the best format is chosen:
     /// largest, then fastest, then MJPEG over raw.
     pub fn open(id: &str, format: Option<VideoFormat>, output: Output) -> Result<Self, CaptureError> {
+        Self::open_inner(id, format, output, false)
+    }
+
+    /// Like `open`, also capturing the card's own audio (for cards whose
+    /// sound is a pin on the video device, like the GC573); take it with
+    /// `take_audio`.
+    pub fn open_with_audio(id: &str, format: Option<VideoFormat>, output: Output) -> Result<Self, CaptureError> {
+        Self::open_inner(id, format, output, true)
+    }
+
+    /// The card's own audio, if opened with `open_with_audio` and the card
+    /// has it.
+    pub fn take_audio(&mut self) -> Option<AudioCapture> {
+        self.audio.take()
+    }
+
+    fn open_inner(id: &str, format: Option<VideoFormat>, output: Output, audio: bool) -> Result<Self, CaptureError> {
         if id == pattern::ID {
             let (p, format) = pattern::Pattern::open(output);
-            return Ok(Self { inner: Inner::Pattern(p), format });
+            return Ok(Self { inner: Inner::Pattern(p), format, audio: None });
         }
         #[cfg(windows)]
         {
-            let (reader, format) = mf::Reader::open(id, format, output)?;
-            Ok(Self { inner: Inner::Mf(reader), format })
+            let ds_open = |id: &str| {
+                ds::Reader::open(id, format, output, audio).map(|(mut reader, format)| {
+                    let audio = reader.audio.take();
+                    Self { inner: Inner::Ds(reader), format, audio }
+                })
+            };
+            if id.starts_with(ds::PREFIX) {
+                return ds_open(id);
+            }
+            match mf::Reader::open(id, format, output) {
+                Ok((reader, format)) => Ok(Self { inner: Inner::Mf(reader), format, audio: None }),
+                // Media Foundation can't open some cards at all; DirectShow
+                // usually can. A card in use stays an error either way.
+                Err(e @ CaptureError::InUse(_)) => Err(e),
+                Err(e) => ds_open(id).map_err(|_| e),
+            }
         }
         #[cfg(not(windows))]
         {
-            let _ = (format, output);
+            let _ = (format, output, audio);
             Err(CaptureError::Unsupported("video capture isn't available on this system yet".into()))
         }
     }
@@ -181,15 +236,25 @@ impl VideoCapture {
         match &mut self.inner {
             #[cfg(windows)]
             Inner::Mf(reader) => reader.next_frame(timeout),
+            #[cfg(windows)]
+            Inner::Ds(reader) => reader.next_frame(timeout),
             Inner::Pattern(p) => Ok(p.next_frame(timeout)),
         }
     }
 }
 
+/// DirectShow diagnostics (audio inputs, pins per video device).
+#[cfg(windows)]
+#[doc(hidden)]
+pub fn describe_directshow() -> String {
+    ds::describe()
+}
+
 /// Pick the format to use when none was chosen: 1920x1080 (what MiSTer
-/// outputs over HDMI by default) at the highest rate; otherwise the largest
-/// 16:9-or-wider format at 50 fps or more; otherwise the largest. MJPEG
-/// beats raw at equal size and rate (raw formats run slower over USB).
+/// outputs over HDMI by default); otherwise the largest 16:9-or-wider
+/// format at 50 fps or more; otherwise the largest. Among those, the rate
+/// closest to 60 (MiSTer's; 240 Hz modes only cost bandwidth), then MJPEG
+/// over raw (raw formats run slower over USB).
 pub fn best_format(formats: &[VideoFormat]) -> Option<VideoFormat> {
     let key = |f: &VideoFormat| {
         (
@@ -197,7 +262,8 @@ pub fn best_format(formats: &[VideoFormat]) -> Option<VideoFormat> {
             f.fps >= 49.0 && f.width as f64 / f.height.max(1) as f64 >= 1.7, // 16:9 give or take (1360x768)
             f.fps >= 49.0,
             f.width as u64 * f.height as u64,
-            (f.fps * 1000.0) as u64,
+            // Closest to 60 fps wins; below 49 the faster the better.
+            -((f.fps.min(1000.0) - 60.0).abs() * 1000.0) as i64,
             f.pixel == PixelFormat::Mjpeg,
         )
     };
@@ -235,6 +301,9 @@ mod tests {
         ];
         assert_eq!(best_format(&formats), Some(formats[2]));
         assert_eq!(best_format(&formats[3..]), Some(formats[4]), "16:9 at 60 over 5:4 at 60");
+        // A GC573: 1080p at 60 and 240; NV12 and YUY2.
+        let gc = [f(PixelFormat::Yuy2, 1920, 1080, 240.0), f(PixelFormat::Nv12, 1920, 1080, 60.0), f(PixelFormat::Nv12, 3840, 2160, 60.0)];
+        assert_eq!(best_format(&gc), Some(gc[1]));
     }
 
     #[test]

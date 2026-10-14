@@ -120,9 +120,11 @@ impl Subscriber for ViewerConn {
 
 fn serve(server: Arc<Server>, sock: TcpStream) -> Result<(), String> {
     sock.set_nodelay(true).ok();
-    sock.set_read_timeout(Some(HELLO_TIMEOUT)).ok();
     let mut write = BufWriter::with_capacity(256 * 1024, sock.try_clone().map_err(|e| e.to_string())?);
     let mut read = BufReader::with_capacity(64 * 1024, sock.try_clone().map_err(|e| e.to_string())?);
+    // On the handle that reads: on Windows each cloned handle has its own
+    // timeouts.
+    read.get_ref().set_read_timeout(Some(HELLO_TIMEOUT)).ok();
     let hello = match read_message(&mut read).map_err(|e| e.to_string())?.0 {
         Message::Hello(h) => h,
         other => return Err(format!("expected hello, got {other:?}")),
@@ -139,7 +141,7 @@ fn serve(server: Arc<Server>, sock: TcpStream) -> Result<(), String> {
         let names = server.stream_names().join(", ");
         return refuse(&mut write, format!("no stream '{}' on this server (streams: {names})", hello.stream));
     };
-    sock.set_read_timeout(None).ok();
+    read.get_ref().set_read_timeout(None).ok();
     let id = NEXT_VIEWER.fetch_add(1, Ordering::Relaxed);
     let name = if hello.viewer.trim().is_empty() { format!("Viewer {id}") } else { hello.viewer.trim().to_string() };
     log(&format!("viewer {id} '{name}' ({}) joined '{}'", hello.platform, stream.config.name));

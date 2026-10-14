@@ -3,7 +3,8 @@ use std::time::{Duration, Instant};
 use kvms_capture::{Output, VideoCapture};
 
 fn main() {
-    let id = std::env::args().nth(1).unwrap_or_else(|| kvms_capture::devices().unwrap()[0].id.clone());
+    let want = std::env::args().nth(1).unwrap_or_default();
+    let id = kvms_capture::devices().unwrap().into_iter().find(|d| d.name.contains(&want)).expect("no such card").id;
     for output in [Output::Native, Output::Bgra] {
         let t = Instant::now();
         let mut cap = match VideoCapture::open(&id, None, output) {

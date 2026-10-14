@@ -9,7 +9,7 @@ use std::sync::{Arc, Condvar, Mutex, Weak};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-use kvms_capture::{AudioCapture, CaptureError, Output, PixelFormat, VideoCapture, VideoFrame};
+use kvms_capture::{is_card_audio, AudioCapture, CaptureError, Output, PixelFormat, VideoCapture, VideoFrame};
 use kvms_codec::{convert, jpeg, scale, Bgra};
 use kvms_core::{ConnectionState, MisterSession, SessionObserver};
 use mkvm::{
@@ -104,6 +104,9 @@ pub struct Stream {
     control: Mutex<(Control, HeldInput)>,
     mister: Mutex<Option<Arc<MisterSession>>>,
     mister_status: Mutex<BTreeMap<String, String>>,
+    /// Card audio handed over by the capture thread (cards whose sound is a
+    /// pin on the video device).
+    card_audio: Mutex<Option<AudioCapture>>,
     /// Size each viewer got last (for the status page).
     sizes: Mutex<BTreeMap<ViewerId, (u32, u32)>>,
     threads: Mutex<Vec<JoinHandle<()>>>,
@@ -122,6 +125,7 @@ impl Stream {
             mister: Mutex::new(None),
             mister_status: Mutex::new(BTreeMap::new()),
             sizes: Mutex::new(BTreeMap::new()),
+            card_audio: Mutex::new(None),
             threads: Mutex::new(Vec::new()),
         });
         log(&format!("stream '{}': start (video '{}', audio '{}', MiSTer '{}')", stream.config.name, stream.config.video_name, stream.config.audio, stream.config.mister));
@@ -354,7 +358,13 @@ fn device_id(config: &StreamConfig) -> String {
 fn capture_loop(stream: Arc<Stream>) {
     while !stream.stopped() {
         let id = device_id(&stream.config);
-        let mut cap = match VideoCapture::open(&id, stream.config.format, Output::Native) {
+        let card_audio = is_card_audio(&stream.config.audio);
+        let opened = if card_audio {
+            VideoCapture::open_with_audio(&id, stream.config.format, Output::Native)
+        } else {
+            VideoCapture::open(&id, stream.config.format, Output::Native)
+        };
+        let mut cap = match opened {
             Ok(c) => c,
             Err(e) => {
                 stream.set_error(&describe(&e));
@@ -365,6 +375,12 @@ fn capture_loop(stream: Arc<Stream>) {
         };
         let format = cap.format();
         log(&format!("stream '{}': capturing {format}", stream.config.name));
+        if card_audio {
+            match cap.take_audio() {
+                Some(a) => *stream.card_audio.lock().unwrap() = Some(a),
+                None => stream.status.lock().unwrap().audio_error = "this card has no audio of its own".into(),
+            }
+        }
         {
             let mut st = stream.status.lock().unwrap();
             st.fps = format.fps;
@@ -527,12 +543,21 @@ fn encode_loop(stream: Arc<Stream>) {
 }
 
 fn audio_loop(stream: Arc<Stream>) {
+    let card_audio = is_card_audio(&stream.config.audio);
     while !stream.stopped() {
-        let cap = match AudioCapture::open(&stream.config.audio) {
+        let opened = if card_audio {
+            // Arrives with the video (the capture thread opens both).
+            stream.card_audio.lock().unwrap().take().ok_or(None)
+        } else {
+            AudioCapture::open(&stream.config.audio).map_err(Some)
+        };
+        let cap = match opened {
             Ok(c) => c,
             Err(e) => {
-                stream.status.lock().unwrap().audio_error = e.to_string();
-                wait(&stream, RETRY);
+                if let Some(e) = e {
+                    stream.status.lock().unwrap().audio_error = e.to_string();
+                }
+                wait(&stream, if card_audio { Duration::from_millis(200) } else { RETRY });
                 continue;
             }
         };

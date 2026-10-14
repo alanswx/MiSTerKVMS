@@ -141,18 +141,29 @@ pub struct AudioInput {
 /// Capture cards on this computer (for "Capture card on this computer").
 #[uniffi::export]
 pub fn capture_cards() -> Vec<CaptureCard> {
-    let audio: Vec<String> = kvms_capture::audio_devices().into_iter().map(|a| a.name).collect();
+    let inputs = audio_inputs();
+    let names: Vec<String> = inputs.iter().map(|a| a.name.clone()).collect();
     kvms_capture::devices()
         .unwrap_or_default()
         .into_iter()
-        .map(|d| CaptureCard { audio: kvms_capture::matching_audio(&d.name, &audio).unwrap_or_default(), id: d.id, name: d.name })
+        .map(|d| {
+            let audio = kvms_capture::matching_audio(&d.name, &names)
+                .and_then(|name| inputs.iter().find(|a| a.name == name).map(|a| a.id.clone()))
+                .unwrap_or_default();
+            CaptureCard { audio, id: d.id, name: d.name }
+        })
         .collect()
 }
 
 /// Audio inputs on this computer.
 #[uniffi::export]
 pub fn audio_inputs() -> Vec<AudioInput> {
-    kvms_capture::audio_devices().into_iter().map(|a| AudioInput { id: a.name.clone(), name: a.name }).collect()
+    // Card audio keeps its id (it names the card); system inputs go by name,
+    // which survives reboots and driver updates better than WASAPI ids.
+    kvms_capture::audio_devices()
+        .into_iter()
+        .map(|a| AudioInput { id: if kvms_capture::is_card_audio(&a.id) { a.id } else { a.name.clone() }, name: a.name })
+        .collect()
 }
 
 #[cfg(test)]

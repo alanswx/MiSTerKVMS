@@ -20,16 +20,32 @@ pub struct AudioDevice {
     pub name: String,
 }
 
-/// Input devices (microphones, capture card audio, ...).
+/// Audio ids starting with this come from a capture card's own audio pin,
+/// opened together with its video (`VideoCapture::open_with_audio`).
+pub const CARD_AUDIO: &str = "card:";
+
+/// Whether an audio id (or name, as the setup page stores it) is a card's
+/// own audio rather than a system input.
+pub fn is_card_audio(id_or_name: &str) -> bool {
+    id_or_name.starts_with(CARD_AUDIO) || id_or_name.ends_with(" (card audio)")
+}
+
+/// Input devices (microphones, capture card audio, ...), then audio that
+/// comes from a card's own pin.
 pub fn audio_devices() -> Vec<AudioDevice> {
-    let Ok(devices) = cpal::default_host().input_devices() else { return Vec::new() };
-    devices
-        .filter_map(|d| {
-            let name = d.description().ok()?.name().to_string();
-            let id = d.id().ok()?.to_string();
-            Some(AudioDevice { id, name })
-        })
-        .collect()
+    let mut list: Vec<AudioDevice> = match cpal::default_host().input_devices() {
+        Ok(devices) => devices
+            .filter_map(|d| {
+                let name = d.description().ok()?.name().to_string();
+                let id = d.id().ok()?.to_string();
+                Some(AudioDevice { id, name })
+            })
+            .collect(),
+        Err(_) => Vec::new(),
+    };
+    #[cfg(windows)]
+    list.extend(crate::ds::audio_devices());
+    list
 }
 
 pub struct AudioChunk {
@@ -51,9 +67,18 @@ pub struct AudioCapture {
 }
 
 impl AudioCapture {
+    /// Audio fed by a video backend (a card's own audio pin).
+    #[cfg_attr(not(windows), allow(dead_code))]
+    pub(crate) fn from_channel(rx: Receiver<Result<AudioChunk, CaptureError>>, stop: Arc<AtomicBool>, channels: u16, rate: u32) -> Self {
+        Self { rx, stop, channels, rate }
+    }
+
     /// Open the input device with id `id`, or else the first whose name is
     /// `id`.
     pub fn open(id: &str) -> Result<Self, CaptureError> {
+        if is_card_audio(id) {
+            return Err(CaptureError::Unsupported("card audio comes with its video (open_with_audio)".into()));
+        }
         let stop = Arc::new(AtomicBool::new(false));
         let (tx, rx) = mpsc::sync_channel(256);
         let (ready_tx, ready_rx) = mpsc::channel();
