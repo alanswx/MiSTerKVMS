@@ -14,7 +14,9 @@ use std::path::{Path, PathBuf};
 
 use serde::Serialize;
 
+#[cfg_attr(not(windows), allow(dead_code))]
 pub const NAME: &str = "MiSTerKVMSCapture";
+#[cfg_attr(not(windows), allow(dead_code))]
 pub const DISPLAY_NAME: &str = "MiSTerKVMS Capture";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
