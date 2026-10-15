@@ -172,8 +172,8 @@ fn serve(server: Arc<Server>, sock: TcpStream) -> Result<(), String> {
             Err(e) => break Err(e.to_string()),
         };
         match msg {
-            Message::Subscribe(Subscribe { video, audio, max_width, max_height, .. }) => {
-                *viewer.want.lock().unwrap() = Want { video, audio, max_width, max_height };
+            Message::Subscribe(Subscribe { video, audio, max_width, max_height, max_fps, quality, .. }) => {
+                *viewer.want.lock().unwrap() = Want { video, audio, max_width, max_height, max_fps, quality };
             }
             Message::Input(cmds) => stream.input(id, cmds),
             Message::TakeControl => stream.take_control(id),

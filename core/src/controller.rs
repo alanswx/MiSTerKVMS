@@ -106,6 +106,35 @@ struct Recording {
     recorder: Recorder,
 }
 
+/// What a viewer asks a capture server stream for besides the host's
+/// Quality: its own screen's size, and for a slow connection fewer pictures
+/// and a lower JPEG quality. None: no limit of its own.
+#[derive(Debug, Clone, Default, PartialEq, uniffi::Record)]
+pub struct StreamLimits {
+    pub max_width: Option<u32>,
+    pub max_height: Option<u32>,
+    pub max_fps: Option<f64>,
+    /// JPEG quality, 1–100.
+    pub quality: Option<u8>,
+}
+
+impl StreamLimits {
+    /// Combined with the host's Quality: the smaller size of the two.
+    fn with_profile(&self, profile: &HostProfile) -> (Option<u32>, Option<u32>) {
+        let min = |a: Option<u32>, b: Option<u32>| match (a, b) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        };
+        let (w, h) = profile.max_size();
+        (min(w, self.max_width), min(h, self.max_height))
+    }
+
+    fn apply(&self, link: &MkvmLink, profile: &HostProfile) {
+        let (w, h) = self.with_profile(profile);
+        link.set_limits(w, h, self.max_fps, self.quality);
+    }
+}
+
 struct State {
     profile: Option<HostProfile>,
     session: Option<Arc<MisterSession>>,
@@ -135,6 +164,7 @@ struct State {
     last_recording: Option<String>,
     recording_error: Option<String>,
     last_model_save: Instant,
+    limits: StreamLimits,
 }
 
 impl Default for State {
@@ -165,6 +195,7 @@ impl Default for State {
             last_recording: None,
             recording_error: None,
             last_model_save: Instant::now(),
+            limits: StreamLimits::default(),
         }
     }
 }
@@ -385,19 +416,33 @@ impl Controller {
     /// Change the open host's quality ("auto", "best", "balanced", "low")
     /// and remember it.
     pub fn set_quality(&self, quality: String) {
-        let (link, id) = {
+        let (link, id, limits) = {
             let mut s = self.inner.state.lock().unwrap();
             let link = s.link.clone();
+            let limits = s.limits.clone();
             let Some(p) = s.profile.as_mut() else { return };
             p.quality = quality.clone();
-            (link, p.id.clone())
+            (link, p.id.clone(), limits)
         };
         self.inner.store.update(&id, |p| p.quality = quality.clone());
         if let Some(link) = link {
-            let (w, h) = HostProfile { quality, ..Default::default() }.max_size();
-            link.set_quality(w, h, None);
+            limits.apply(&link, &HostProfile { quality, ..Default::default() });
         }
         self.inner.notify(ControllerEvent::Changed);
+    }
+
+    /// This viewer's own limits for capture server streams (a phone: its
+    /// screen's size; away from home: fewer pictures, lower JPEG quality).
+    /// Applies now and to every stream opened later.
+    pub fn set_stream_limits(&self, limits: StreamLimits) {
+        let mut s = self.inner.state.lock().unwrap();
+        if s.limits == limits {
+            return;
+        }
+        s.limits = limits;
+        if let (Some(link), Some(profile)) = (s.link.clone(), s.profile.clone()) {
+            s.limits.apply(&link, &profile);
+        }
     }
 
     /// The open host's input session (shells whose capture talks to it
@@ -923,8 +968,7 @@ impl Inner {
         match mkvm::StreamAddress::parse(&profile.stream) {
             Ok(address) => {
                 let link = MkvmLink::connect(address, viewer);
-                let (w, h) = profile.max_size();
-                link.set_quality(w, h, None);
+                s.limits.apply(&link, profile);
                 let session = MisterSession::with_link(link.clone(), observer);
                 session.set_settings(profile.input_settings());
                 s.session = Some(session);

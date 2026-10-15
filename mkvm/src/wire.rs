@@ -176,8 +176,9 @@ mod tests {
             audio: true,
             max_width: Some(1920),
             max_height: Some(1080),
-            max_fps: None,
+            max_fps: Some(30.0),
             codec: Some(Codec::H264),
+            quality: Some(70),
         }));
         round_trip(Message::Input(vec![
             InputCmd::Send { m: "kbdRawDown:30".into() },

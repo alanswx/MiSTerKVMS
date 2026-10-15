@@ -38,12 +38,15 @@ pub fn fit(width: u32, height: u32, max_w: u32, max_h: u32) -> (u32, u32) {
     (w.max(2), h.max(2))
 }
 
-/// The offered size a viewer gets for its limits (None = native).
+/// The offered size a viewer gets for its limits (None = native): the
+/// largest within them, or within 10% above them, so a viewer showing
+/// 1206x680 gets 1280x720 (scaled down on its side) rather than 960x540.
 pub fn size_for(width: u32, height: u32, max_w: Option<u32>, max_h: Option<u32>) -> (u32, u32) {
     let (mw, mh) = (max_w.unwrap_or(u32::MAX), max_h.unwrap_or(u32::MAX));
+    let slack = |m: u32| m.saturating_add(m / 10);
     offered_sizes(width, height)
         .into_iter()
-        .find(|&(w, h)| w <= mw && h <= mh)
+        .find(|&(w, h)| w <= slack(mw) && h <= slack(mh))
         .unwrap_or_else(|| fit(width, height, mw.max(2), mh.max(2)))
 }
 
@@ -161,6 +164,9 @@ mod tests {
         assert_eq!(size_for(3840, 2160, Some(1920), Some(1080)), (1920, 1080));
         assert_eq!(size_for(1920, 1080, Some(1280), Some(720)), (1280, 720));
         assert_eq!(size_for(1920, 1080, Some(800), Some(600)), (800, 450));
+        // A phone's video area: the 720p picture, a little larger than asked.
+        assert_eq!(size_for(1920, 1080, Some(1206), Some(680)), (1280, 720));
+        assert_eq!(size_for(1920, 1080, Some(1000), Some(600)), (960, 540));
     }
 
     #[test]

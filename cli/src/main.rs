@@ -128,6 +128,12 @@ enum Cmd {
         /// Largest picture to ask for, e.g. 1280x720 (default: native).
         #[arg(long)]
         max: Option<String>,
+        /// At most this many pictures a second, e.g. 30 (default: all).
+        #[arg(long)]
+        fps: Option<f64>,
+        /// JPEG quality 1-100 (default: the server's; a card's own JPEGs pass through).
+        #[arg(long)]
+        quality: Option<u8>,
         /// Save the last picture as PNG.
         #[arg(long)]
         save: Option<PathBuf>,
@@ -217,7 +223,7 @@ fn run(cli: Cli) -> Result<Value, String> {
         s.local_audio = a;
     }
     match cli.cmd {
-        Cmd::Stream { address, duration: d, max, save } => {
+        Cmd::Stream { address, duration: d, max, fps, quality, save } => {
             let max = match max {
                 Some(m) => {
                     let (w, h) = m.split_once(['x', 'X']).ok_or("--max is WIDTHxHEIGHT")?;
@@ -225,7 +231,7 @@ fn run(cli: Cli) -> Result<Value, String> {
                 }
                 None => None,
             };
-            stream::watch(&address, duration(&d)?, max, save.as_deref())
+            stream::watch(&address, duration(&d)?, stream::Limits { max, fps, quality }, save.as_deref())
         }
         Cmd::Streams { wait } => {
             let found = kvms_core::discover::find_streams(duration(&wait)?.as_millis() as u32);

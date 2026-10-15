@@ -377,7 +377,7 @@ impl Subscriber for Preview {
         "setup page".into()
     }
     fn want(&self) -> Want {
-        Want { video: true, audio: false, max_width: Some(PREVIEW_MAX.0), max_height: Some(PREVIEW_MAX.1) }
+        Want { video: true, audio: false, max_width: Some(PREVIEW_MAX.0), max_height: Some(PREVIEW_MAX.1), ..Default::default() }
     }
     fn video(&self, frame: Arc<Encoded>) {
         *self.latest.lock().unwrap() = Some(frame);

@@ -76,12 +76,17 @@ pub struct Subscribe {
     pub video: bool,
     pub audio: bool,
     /// Largest picture wanted; the server picks the best size it offers
-    /// within it. None = native.
+    /// within it (or up to 10% above it, e.g. 1280x720 for a 1206x680
+    /// phone, scaled down by the viewer). None = native.
     pub max_width: Option<u32>,
     pub max_height: Option<u32>,
+    /// Fewer pictures than the card delivers (e.g. 30 of 60) for slow links.
     pub max_fps: Option<f64>,
     /// Preferred codec; None lets the server choose (native JPEG on a LAN).
     pub codec: Option<Codec>,
+    /// JPEG quality (1–100) for this viewer; None = the stream's own, and a
+    /// card's own JPEGs pass through untouched at native size.
+    pub quality: Option<u8>,
 }
 
 /// Input for the MiSTer, already translated to mrext's terms by the viewer

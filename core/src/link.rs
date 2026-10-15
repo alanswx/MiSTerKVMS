@@ -135,12 +135,14 @@ impl MkvmLink {
         self.send(&Message::Subscribe(sub));
     }
 
-    /// Ask for at most this picture size (None: native) and codec.
-    pub fn set_quality(&self, max_width: Option<u32>, max_height: Option<u32>, codec: Option<Codec>) {
+    /// Ask for at most this picture size (None: native), this many pictures
+    /// a second and this JPEG quality (None: the server's).
+    pub fn set_limits(&self, max_width: Option<u32>, max_height: Option<u32>, max_fps: Option<f64>, quality: Option<u8>) {
         let mut sub = self.subscription.lock().unwrap();
         sub.max_width = max_width;
         sub.max_height = max_height;
-        sub.codec = codec;
+        sub.max_fps = max_fps;
+        sub.quality = quality;
         let sub = sub.clone();
         self.send(&Message::Subscribe(sub));
     }

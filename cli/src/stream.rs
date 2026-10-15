@@ -14,7 +14,15 @@ fn now_100ns() -> i64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| (d.as_nanos() / 100) as i64)
 }
 
-pub fn watch(address: &str, duration: Duration, max: Option<(u32, u32)>, save: Option<&Path>) -> Result<Value, String> {
+/// What to ask the server for, as a remote viewer might.
+#[derive(Default)]
+pub struct Limits {
+    pub max: Option<(u32, u32)>,
+    pub fps: Option<f64>,
+    pub quality: Option<u8>,
+}
+
+pub fn watch(address: &str, duration: Duration, limits: Limits, save: Option<&Path>) -> Result<Value, String> {
     let address = StreamAddress::parse(address)?;
     let addr = address
         .socket()
@@ -48,8 +56,10 @@ pub fn watch(address: &str, duration: Duration, max: Option<(u32, u32)>, save: O
         &Message::Subscribe(Subscribe {
             video: true,
             audio: true,
-            max_width: max.map(|m| m.0),
-            max_height: max.map(|m| m.1),
+            max_width: limits.max.map(|m| m.0),
+            max_height: limits.max.map(|m| m.1),
+            max_fps: limits.fps,
+            quality: limits.quality,
             ..Default::default()
         }),
     )?;

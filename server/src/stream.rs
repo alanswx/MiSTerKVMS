@@ -59,6 +59,10 @@ pub struct Want {
     pub audio: bool,
     pub max_width: Option<u32>,
     pub max_height: Option<u32>,
+    /// Send only this many pictures a second (None: every one).
+    pub max_fps: Option<f64>,
+    /// JPEG quality for this viewer (None: the stream's own).
+    pub quality: Option<u8>,
 }
 
 /// Someone watching a stream: an mkvm viewer or a setup-page preview.
@@ -503,24 +507,52 @@ fn encode_loop(stream: Arc<Stream>) {
 
 type Deliveries = Vec<(Arc<dyn Subscriber>, (u32, u32), Arc<Encoded>)>;
 
+/// One picture to encode: size and JPEG quality (None: the stream's own).
+type Target = (u32, u32, Option<u8>);
+
+/// Whether a frame captured at `ts` (100 ns units) goes to a viewer that
+/// wants at most `max_fps` from a card delivering `source_fps`: the first
+/// frame of each 1/max_fps slot does. Decided from the timestamp alone, so
+/// encoder threads may decide frames in any order.
+fn due(ts: i64, source_fps: f64, max_fps: Option<f64>) -> bool {
+    let Some(max) = max_fps.filter(|m| *m > 0.0) else { return true };
+    if source_fps <= 0.0 || source_fps <= max * 1.05 {
+        return true;
+    }
+    let slot = 1e7 / max;
+    let frame = 1e7 / source_fps;
+    (ts as f64 / slot).floor() != ((ts as f64 - frame) / slot).floor()
+}
+
 /// The pictures for one frame, per viewer; None if nobody wants video or
 /// the frame couldn't be read.
 fn encode_frame(stream: &Stream, frame: VideoFrame, native_bgra: &mut Bgra) -> Option<Deliveries> {
-    let subs: Vec<Arc<dyn Subscriber>> = stream.subscribers.lock().unwrap().iter().filter(|s| s.want().video).cloned().collect();
+    let source_fps = stream.status.lock().unwrap().fps;
+    let subs: Vec<Arc<dyn Subscriber>> = stream
+        .subscribers
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|s| {
+            let w = s.want();
+            w.video && due(frame.timestamp, source_fps, w.max_fps)
+        })
+        .cloned()
+        .collect();
     if subs.is_empty() {
         return None;
     }
-    // Viewer → target size, at most MAX_PIPELINES distinct.
-    let mut wanted: Vec<(Arc<dyn Subscriber>, (u32, u32))> = subs
+    // Viewer → target (size and quality), at most MAX_PIPELINES distinct.
+    let mut wanted: Vec<(Arc<dyn Subscriber>, Target)> = subs
         .into_iter()
         .map(|s| {
             let w = s.want();
-            let size = scale::size_for(frame.width, frame.height, w.max_width, w.max_height);
-            (s, size)
+            let (width, height) = scale::size_for(frame.width, frame.height, w.max_width, w.max_height);
+            (s, (width, height, w.quality.map(|q| q.clamp(1, 100))))
         })
         .collect();
-    let mut targets: Vec<(u32, u32)> = wanted.iter().map(|(_, t)| *t).collect();
-    targets.sort_by(|a, b| (b.0 * b.1).cmp(&(a.0 * a.1)));
+    let mut targets: Vec<Target> = wanted.iter().map(|(_, t)| *t).collect();
+    targets.sort_by(|a, b| (b.0 * b.1).cmp(&(a.0 * a.1)).then(b.2.cmp(&a.2)));
     targets.dedup();
     if targets.len() > MAX_PIPELINES {
         let kept = targets[..MAX_PIPELINES].to_vec();
@@ -534,9 +566,13 @@ fn encode_frame(stream: &Stream, frame: VideoFrame, native_bgra: &mut Bgra) -> O
     }
 
     let native = (frame.width, frame.height);
-    // BGRA only to scale (or for a BGRA card): native-size pictures of raw
-    // cards are encoded straight from their YUV.
-    let needs_pixels = targets.iter().any(|t| *t != native) || frame.format == PixelFormat::Bgra;
+    // A card's own JPEG passes through untouched at native size, unless the
+    // viewer asked for another quality.
+    let passthrough = |t: &Target| frame.format == PixelFormat::Mjpeg && (t.0, t.1) == native && t.2.is_none();
+    // BGRA only to scale, re-encode a card's JPEG, or for a BGRA card:
+    // native-size pictures of raw cards are encoded straight from their YUV.
+    let needs_pixels = targets.iter().any(|t| (t.0, t.1) != native || (frame.format == PixelFormat::Mjpeg && !passthrough(t)))
+        || frame.format == PixelFormat::Bgra;
     if needs_pixels {
         let ok = match frame.format {
             PixelFormat::Mjpeg => jpeg::decode(&frame.data, native_bgra).map_err(|e| e.to_string()),
@@ -559,13 +595,13 @@ fn encode_frame(stream: &Stream, frame: VideoFrame, native_bgra: &mut Bgra) -> O
         }
     }
     let native_bgra = &*native_bgra;
-    let quality = stream.config.quality.clamp(1, 100);
-    let encode = |target: (u32, u32)| -> Option<Arc<Encoded>> {
-        let data = if target == native && frame.format == PixelFormat::Mjpeg {
+    let encode = |target: Target| -> Option<Arc<Encoded>> {
+        let quality = target.2.unwrap_or(stream.config.quality).clamp(1, 100);
+        let data = if passthrough(&target) {
             frame.data.clone()
         } else {
             let mut out = Vec::new();
-            let result = if target == native {
+            let result = if (target.0, target.1) == native {
                 let (data, width, height, stride) = (&frame.data[..], frame.width, frame.height, frame.stride);
                 match frame.format {
                     PixelFormat::Nv12 => jpeg::encode_yuv(jpeg::Yuv::Nv12 { data, width, height, stride }, quality, &mut out),
@@ -585,7 +621,7 @@ fn encode_frame(stream: &Stream, frame: VideoFrame, native_bgra: &mut Bgra) -> O
         };
         Some(Arc::new(Encoded { codec: Codec::Jpeg, width: target.0, height: target.1, data, timestamp: frame.timestamp }))
     };
-    let encoded: Vec<((u32, u32), Option<Arc<Encoded>>)> = if targets.len() == 1 {
+    let encoded: Vec<(Target, Option<Arc<Encoded>>)> = if targets.len() == 1 {
         vec![(targets[0], encode(targets[0]))]
     } else {
         thread::scope(|scope| {
@@ -597,7 +633,7 @@ fn encode_frame(stream: &Stream, frame: VideoFrame, native_bgra: &mut Bgra) -> O
         wanted
             .into_iter()
             .filter_map(|(sub, target)| match encoded.iter().find(|(t, _)| *t == target) {
-                Some((_, Some(e))) => Some((sub, target, e.clone())),
+                Some((_, Some(e))) => Some((sub, (target.0, target.1), e.clone())),
                 _ => None,
             })
             .collect(),
@@ -681,5 +717,28 @@ impl SessionObserver for MisterObserver {
         let Some(stream) = self.0.upgrade() else { return };
         stream.mister_status.lock().unwrap().insert(key.clone(), value.clone());
         stream.broadcast(Message::Status(Status { key, value }));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::due;
+
+    /// Frames of a card at `fps` for one second, 100 ns timestamps from `start`.
+    fn frames(fps: f64, start: i64) -> Vec<i64> {
+        (0..fps as i64).map(|i| start + (i as f64 * 1e7 / fps) as i64).collect()
+    }
+
+    #[test]
+    fn caps_the_frame_rate() {
+        let start = 17_604_000_000_000_000; // an arbitrary wall-clock time
+        let sent = |src: f64, max: Option<f64>| frames(src, start).iter().filter(|&&t| due(t, src, max)).count();
+        assert_eq!(sent(60.0, Some(30.0)), 30);
+        assert_eq!(sent(60.0, Some(20.0)), 20);
+        assert_eq!(sent(59.94, Some(30.0)), 30);
+        // No cap, or a card already at or under it: every frame.
+        assert_eq!(sent(60.0, None), 60);
+        assert_eq!(sent(30.0, Some(30.0)), 30);
+        assert_eq!(sent(25.0, Some(30.0)), 25);
     }
 }

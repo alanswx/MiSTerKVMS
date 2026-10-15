@@ -130,6 +130,7 @@ final class AppModel: ObservableObject {
         core.attachSurface(
             surface: .uiKit(uiView: UInt64(UInt(bitPattern: Unmanaged.passUnretained(view).toOpaque()))),
             widthPx: size.width, heightPx: size.height, pointsScale: size.scale)
+        askForScreenSize(size)
     }
 
     func detach(view: UIView) {
@@ -142,6 +143,13 @@ final class AppModel: ObservableObject {
         guard view === videoView else { return }
         let size = Self.pixelSize(of: view)
         core.resizeSurface(widthPx: size.width, heightPx: size.height, pointsScale: size.scale)
+        askForScreenSize(size)
+    }
+
+    /// No bigger picture than the phone shows: the server scales it down
+    /// (1080p → 720p in portrait), a third of the data.
+    private func askForScreenSize(_ size: (width: UInt32, height: UInt32, scale: Float)) {
+        core.setStreamLimits(limits: StreamLimits(maxWidth: size.width, maxHeight: size.height, maxFps: nil, quality: nil))
     }
 
     private static func pixelSize(of view: UIView) -> (width: UInt32, height: UInt32, scale: Float) {
