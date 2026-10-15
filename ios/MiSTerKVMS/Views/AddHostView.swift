@@ -10,10 +10,27 @@ struct AddHostView: View {
     @State private var name = ""
     @State private var resolving: String?
     @State private var error: String?
+    @AppStorage("add.useInternet") private var useInternet = false
+    @State private var settingUp: String?
+    @State private var askingName = false
+    @State private var pendingAdd: (() -> Void)?
+    /// Added, but the internet part failed: say so, then close.
+    @State private var internetError: String?
 
     var body: some View {
         NavigationStack {
             Form {
+                Section {
+                    Toggle("Also use over the internet", isOn: $useInternet)
+                    if let settingUp {
+                        HStack {
+                            ProgressView()
+                            Text("Setting up \(settingUp) for the internet…").foregroundStyle(.secondary)
+                        }
+                    }
+                } footer: {
+                    Text("Pairs this iPhone with the capture PC (once per capture PC), so the MiSTer works from anywhere, encrypted. Needs “Allow connections from the internet” on the capture PC's setup page.")
+                }
                 Section {
                     if browser.found.isEmpty {
                         HStack {
@@ -43,7 +60,7 @@ struct AddHostView: View {
                             }
                         }
                         .tint(.primary)
-                        .disabled(resolving != nil || isSaved(stream))
+                        .disabled(resolving != nil || settingUp != nil || isSaved(stream))
                     }
                 } header: {
                     Text("On this network")
@@ -73,6 +90,15 @@ struct AddHostView: View {
             } message: {
                 Text(error ?? "")
             }
+            .alert("Added, without the internet", isPresented: Binding(get: { internetError != nil }, set: { if !$0 { internetError = nil; dismiss() } })) {
+                Button("OK", role: .cancel) {}
+            } message: {
+                Text("\(internetError ?? "")\n\nTry again later from the MiSTer's settings (long-press it in the list).")
+            }
+            .nameThisIPhone(isPresented: $askingName) {
+                pendingAdd?()
+                pendingAdd = nil
+            }
         }
         .onAppear { browser.start() }
         .onDisappear { browser.stop() }
@@ -89,7 +115,18 @@ struct AddHostView: View {
             error = "\(stream.name) didn't answer. Is the phone on the same network as \(stream.server)?"
             return
         }
-        save(name: stream.name, address: address, mister: stream.mister)
+        whenNamed { save(name: stream.name, address: address, mister: stream.mister) }
+    }
+
+    /// With the internet switch on, the capture PC lists this iPhone by its
+    /// name: ask for a real one first.
+    private func whenNamed(_ add: @escaping () -> Void) {
+        if useInternet && model.deviceNameIsDefault {
+            pendingAdd = add
+            askingName = true
+        } else {
+            add()
+        }
     }
 
     private func addTyped() {
@@ -101,7 +138,7 @@ struct AddHostView: View {
             return
         }
         let given = name.trimmingCharacters(in: .whitespaces)
-        save(name: given.isEmpty ? profile.streamName : given, address: text, mister: "")
+        whenNamed { save(name: given.isEmpty ? profile.streamName : given, address: text, mister: "") }
     }
 
     private func makeProfile(address: String) -> HostProfile {
@@ -121,6 +158,19 @@ struct AddHostView: View {
         profile.name = name
         profile.misterHost = mister
         model.save(profile)
-        dismiss()
+        guard useInternet else {
+            dismiss()
+            return
+        }
+        settingUp = name
+        Task {
+            do {
+                try await model.pairForInternet(profile)
+                dismiss()
+            } catch {
+                internetError = describe(error)
+            }
+            settingUp = nil
+        }
     }
 }

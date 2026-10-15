@@ -6,6 +6,7 @@ struct HostListView: View {
     @EnvironmentObject private var model: AppModel
     @State private var adding = false
     @State private var settingsFor: HostProfile?
+    @State private var appSettings = false
 
     var body: some View {
         List {
@@ -48,8 +49,15 @@ struct HostListView: View {
         }
         .navigationTitle("MiSTerKVMS")
         .toolbar {
-            Button { adding = true } label: { Image(systemName: "plus") }
+            ToolbarItem(placement: .topBarLeading) {
+                Button { appSettings = true } label: { Image(systemName: "gearshape") }
+                    .accessibilityLabel("This iPhone")
+            }
+            ToolbarItem(placement: .topBarTrailing) {
+                Button { adding = true } label: { Image(systemName: "plus") }
+            }
         }
+        .sheet(isPresented: $appSettings) { AppSettingsView() }
         .sheet(isPresented: $adding) { AddHostView() }
         .sheet(item: $settingsFor) { profile in HostSettingsView(hostId: profile.id) }
     }

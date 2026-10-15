@@ -235,6 +235,13 @@ pub struct PairResult {
     pub reused: bool,
 }
 
+/// A device key as the shell keeps it.
+#[derive(Debug, Clone, PartialEq, uniffi::Record)]
+pub struct StoredKey {
+    pub key_id: String,
+    pub key: String,
+}
+
 /// Keys of capture PCs older than server ids are kept under this prefix and
 /// the PC's home address.
 const ADDRESS_KEY: &str = "addr:";
@@ -565,6 +572,13 @@ impl Controller {
         self.reopen_if_open(&id);
         self.inner.notify(ControllerEvent::ProfilesChanged);
         still_needed
+    }
+
+    /// The key this device holds for a capture PC (as `device_key_server`
+    /// names it), for the shell to keep: e.g. after a key kept by address
+    /// moved to the PC's id once the id was learned.
+    pub fn device_key(&self, server_id: String) -> Option<StoredKey> {
+        self.inner.device_keys.lock().unwrap().get(&server_id).map(|k| StoredKey { key_id: k.id_hex(), key: k.key_hex() })
     }
 
     /// Whether this device holds a key for the host's capture PC.
@@ -1235,7 +1249,16 @@ impl Inner {
                 .map(|st| st.server_id.clone())
                 .filter(|id| !id.is_empty() && s.profile.as_ref().is_some_and(|p| p.server_id != *id));
             if let (Some(id), Some(p)) = (&server_id, s.profile.as_mut()) {
+                // A key kept by the PC's address (before its id was known)
+                // now goes by the id.
+                let old = key_server(p);
                 p.server_id = id.clone();
+                let mut keys = self.device_keys.lock().unwrap();
+                if !keys.contains_key(id) {
+                    if let Some(key) = keys.remove(&old) {
+                        keys.insert(id.clone(), key);
+                    }
+                }
             }
             let server_id = server_id.zip(s.profile.as_ref().map(|p| p.id.clone()));
             s.stream = stream;

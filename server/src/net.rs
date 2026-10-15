@@ -178,7 +178,7 @@ fn serve(server: Arc<Server>, sock: TcpStream) -> Result<(), String> {
     }
     // A paired device's encrypted connection, or a plain one.
     let mut device_id = None;
-    let (mut read, mut write, device): (Reader, Writer, Option<String>) = if &first == secure::MAGIC {
+    let (mut read, mut write, mut device): (Reader, Writer, Option<String>) = if &first == secure::MAGIC {
         let id = secure::read_prelude(&mut Sock(sock.clone())).map_err(|e| e.to_string())?;
         if !home && !server.settings().remote_enabled {
             return Err("an encrypted connection from the internet, but internet access is off".into());
@@ -230,6 +230,7 @@ fn serve(server: Arc<Server>, sock: TcpStream) -> Result<(), String> {
     if let Some(key_id) = &device_id {
         // The phone's name may have changed since it paired.
         server.devices.rename(key_id, &hello.viewer);
+        device = server.devices.name(key_id);
     }
     let id = NEXT_VIEWER.fetch_add(1, Ordering::Relaxed);
     let name = if hello.viewer.trim().is_empty() { format!("Viewer {id}") } else { hello.viewer.trim().to_string() };

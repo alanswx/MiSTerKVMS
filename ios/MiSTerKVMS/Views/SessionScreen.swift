@@ -43,6 +43,14 @@ struct SessionScreen: View {
                         }
                         .tint(.white)
                         .accessibilityLabel("Controls")
+                        Button { model.close() } label: {
+                            Image(systemName: "xmark")
+                                .font(.system(size: 15, weight: .semibold))
+                                .frame(width: 40, height: 40)
+                                .background(Circle().fill(.black.opacity(0.5)))
+                        }
+                        .tint(.white)
+                        .accessibilityLabel("Disconnect")
                     }
                     if showBanner, let banner = controlBanner {
                         HStack { banner; Spacer() }
@@ -198,6 +206,13 @@ struct ControlsMenu: View {
                     Toggle("Control banner", isOn: $showBanner)
                     Toggle("Stats", isOn: $showStats)
                     Toggle("Sound", isOn: Binding(get: { !model.muted }, set: { model.muted = !$0 }))
+                }
+                Section {
+                    Toggle("Predictive cursor", isOn: Binding(get: { model.predictiveCursor }, set: { model.predictiveCursor = $0 }))
+                } footer: {
+                    Text(model.state.stream?.internet == true
+                         ? "Draws a pointer ahead of the MiSTer's own to hide the delay. Over the internet the delay jumps around, so it's off unless you turn it on; home and the internet each remember their own setting."
+                         : "Draws a pointer ahead of the MiSTer's own to hide the delay. Home and the internet each remember their own setting.")
                 }
                 Section("Quick buttons") {
                     Toggle("Arrows and OK", isOn: $showDpad)

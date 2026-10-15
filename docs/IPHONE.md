@@ -61,8 +61,12 @@ PC's home address) and the paired devices. Off: nothing changes; the server
 takes connections from the home network only.
 
 On the phone it's per MiSTer: **Use over the internet** in the MiSTer's
-settings (long-press it in the list, or swipe). Turning it on pairs, once,
-at home:
+settings (long-press it in the list, or swipe), or **Also use over the
+internet** when adding it. The phone keeps **one key per capture PC**: each
+capture PC has a permanent random id (`server-id` in its config folder, sent
+in `Welcome` and `Paired`), and a MiSTer whose capture PC the phone already
+has a key for reuses it at once (a stream never connected is asked for its
+PC's id first). Otherwise it pairs, once per capture PC, at home:
 
 1. The phone connects to the stream's home address with plain mkvm, as any
    home viewer does.
@@ -80,7 +84,13 @@ at home:
    seeming to work.
 
 The key crosses the home network in the clear once, during pairing: the
-home network is trusted anyway (P5).
+home network is trusted anyway (P5). **Pair again** (after a revoke, or a
+lost key) sends `Pair.replaces` with the old key id, and the server drops
+that entry. The capture PC lists the phone under **this iPhone's name**,
+set on the phone (iOS gives apps only "iPhone"; the app asks before the
+first pairing, and the gear on the MiSTer list changes it); a paired phone
+that connects under a new name is renamed in the list. The same name is what
+other viewers see ("Dani's iPhone has control").
 
 `internet_address` is a field on the setup page ("Address from the
 internet", e.g. `myhome.duckdns.org:5970`) so it's set once on the PC and
@@ -139,6 +149,12 @@ The phone always uses the secure transport once it has a key, at home too
 first (home or internet), giving it 1.5 s before the other; from the
 internet it asks for at most 30 fps at JPEG quality 70 (§4), and the
 session screen shows a globe next to the MiSTer's name.
+
+The **predictive cursor** keeps a separate switch and learned model for the
+internet (HostProfile `predictive_cursor_internet`, `cursor_*_internet`):
+mobile delay is longer and jumpier, so it starts off there (from a 250 ms
+guess when turned on) and never overwrites what was learned at home. The
+switch is in the controls menu and applies to the route in use.
 
 ## 4. Video and audio over the internet
 
