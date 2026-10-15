@@ -24,11 +24,11 @@ enum HID {
 enum Pref {
     static let keyboard = "show.keyboard"
     static let functionBar = "show.functionBar"
-    static let remote = "show.remote"
+    static let dpad = "show.dpad"
+    static let f12Button = "show.f12"
+    static let backspaceButton = "show.backspace"
     static let banner = "show.banner"
     static let stats = "show.stats"
-    static let remoteCollapsed = "remote.collapsed"
-    static let remoteOpacity = "remote.opacity"
-    static let remoteX = "remote.x"
-    static let remoteY = "remote.y"
+    /// How opaque the quick buttons are (0.25–1).
+    static let buttonOpacity = "quick.opacity"
 }

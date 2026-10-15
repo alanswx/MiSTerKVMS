@@ -1,16 +1,17 @@
 import SwiftUI
 
 /// One MiSTer, full screen (P13): the video as a touchpad, the keyboard and
-/// function bar, the remote, the control banner. Each can be hidden from
-/// the controls menu (the corner button, or a three-finger tap), P14.
+/// function bar, the quick buttons, the control banner. Each can be hidden
+/// from the controls menu (the corner button, or a three-finger tap), P14,
+/// and the quick buttons can be moved anywhere (Arrange mode).
 struct SessionScreen: View {
     @EnvironmentObject private var model: AppModel
     @AppStorage(Pref.keyboard) private var showKeyboard = true
     @AppStorage(Pref.functionBar) private var showFunctionBar = true
-    @AppStorage(Pref.remote) private var showRemote = true
     @AppStorage(Pref.banner) private var showBanner = true
     @AppStorage(Pref.stats) private var showStats = false
     @State private var menuOpen = false
+    @State private var arranging = false
 
     var body: some View {
         ZStack {
@@ -24,33 +25,55 @@ struct SessionScreen: View {
 
             statusOverlay
 
-            if showRemote { RemoteView() }
+            QuickButtons(arranging: $arranging)
 
-            VStack(spacing: 6) {
-                HStack(alignment: .top) {
-                    if showBanner, let banner = controlBanner { banner }
-                    Spacer()
-                    Button { menuOpen = true } label: {
-                        Image(systemName: "slider.horizontal.3")
-                            .font(.system(size: 17))
-                            .frame(width: 40, height: 40)
-                            .background(Circle().fill(.black.opacity(0.5)))
+            if arranging {
+                arrangeBar
+            } else {
+                VStack(spacing: 6) {
+                    HStack(alignment: .top) {
+                        if showBanner, let banner = controlBanner { banner }
+                        Spacer()
+                        Button { menuOpen = true } label: {
+                            Image(systemName: "slider.horizontal.3")
+                                .font(.system(size: 17))
+                                .frame(width: 40, height: 40)
+                                .background(Circle().fill(.black.opacity(0.5)))
+                        }
+                        .tint(.white)
+                        .accessibilityLabel("Controls")
                     }
-                    .tint(.white)
-                    .accessibilityLabel("Controls")
+                    if showStats { stats }
+                    Spacer()
                 }
-                if showStats { stats }
-                Spacer()
+                .padding(.horizontal, 12)
+                .padding(.top, 4)
             }
-            .padding(.horizontal, 12)
-            .padding(.top, 4)
         }
         .statusBarHidden()
         .persistentSystemOverlays(.hidden)
         .sheet(isPresented: $menuOpen) {
-            ControlsMenu()
+            ControlsMenu(arrange: { arranging = true })
                 .presentationDetents([.medium, .large])
                 .presentationBackground(.ultraThinMaterial)
+        }
+    }
+
+    /// Arrange mode's instructions and Done.
+    private var arrangeBar: some View {
+        VStack {
+            HStack(spacing: 12) {
+                Text("Drag the buttons where you want them")
+                    .font(.callout)
+                Spacer()
+                Button("Done") { arranging = false }
+                    .buttonStyle(.borderedProminent)
+            }
+            .padding(.horizontal, 14).padding(.vertical, 10)
+            .background(RoundedRectangle(cornerRadius: 14).fill(.black.opacity(0.8)))
+            .padding(.horizontal, 12)
+            .padding(.top, 4)
+            Spacer()
         }
     }
 
@@ -124,14 +147,18 @@ struct SessionScreen: View {
 
 /// Show or hide each part of the session screen; back to the host list.
 struct ControlsMenu: View {
+    /// Enter Arrange mode (moving the quick buttons).
+    var arrange: () -> Void
     @EnvironmentObject private var model: AppModel
     @Environment(\.dismiss) private var dismiss
     @AppStorage(Pref.keyboard) private var showKeyboard = true
     @AppStorage(Pref.functionBar) private var showFunctionBar = true
-    @AppStorage(Pref.remote) private var showRemote = true
+    @AppStorage(Pref.dpad) private var showDpad = true
+    @AppStorage(Pref.f12Button) private var showF12 = true
+    @AppStorage(Pref.backspaceButton) private var showBackspace = true
     @AppStorage(Pref.banner) private var showBanner = true
     @AppStorage(Pref.stats) private var showStats = false
-    @AppStorage(Pref.remoteOpacity) private var remoteOpacity = 0.6
+    @AppStorage(Pref.buttonOpacity) private var buttonOpacity = 0.6
 
     var body: some View {
         NavigationStack {
@@ -139,16 +166,25 @@ struct ControlsMenu: View {
                 Section("Show") {
                     Toggle("Keyboard", isOn: $showKeyboard)
                     Toggle("Function keys", isOn: $showFunctionBar)
-                    Toggle("Remote", isOn: $showRemote)
-                    if showRemote {
-                        HStack {
-                            Text("See-through")
-                            Slider(value: $remoteOpacity, in: 0.25...1)
-                        }
-                    }
                     Toggle("Control banner", isOn: $showBanner)
                     Toggle("Stats", isOn: $showStats)
                     Toggle("Sound", isOn: Binding(get: { !model.muted }, set: { model.muted = !$0 }))
+                }
+                Section("Quick buttons") {
+                    Toggle("Arrows and OK", isOn: $showDpad)
+                    Toggle("F12 (MiSTer menu)", isOn: $showF12)
+                    Toggle("Backspace", isOn: $showBackspace)
+                    if showDpad || showF12 || showBackspace {
+                        HStack {
+                            Text("See-through")
+                            Slider(value: $buttonOpacity, in: 0.25...1)
+                        }
+                        Button("Move buttons…") {
+                            dismiss()
+                            arrange()
+                        }
+                        Button("Reset positions") { QuickButtons.resetPositions() }
+                    }
                 }
                 Section {
                     Button("Reset zoom") { model.resetZoom() }

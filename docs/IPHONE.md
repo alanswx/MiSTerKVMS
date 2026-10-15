@@ -19,10 +19,10 @@ Decisions so far (October 2026):
 | P8 | Plain (unencrypted) mkvm is accepted **from LAN addresses only**. |
 | P9 | Internet video is **H.264 at a capped bitrate**, re-encoded on the server (CAPTURE-SERVER.md C8), decoded in hardware on the phone. |
 | P10 | Keyboard: the **iOS system keyboard** plus a **function bar** above it (Esc, Tab, Ctrl, Alt, Win, F1–F12). No custom keyboard. |
-| P11 | A floating, translucent, collapsible **remote**: ↑ ↓ ← →, OK (Enter), F12 (MiSTer menu), ⌫ (Backspace). |
+| P11 | Translucent **quick buttons**: ↑ ↓ ← → around OK (Enter), F12 (MiSTer menu), ⌫ (Backspace). Each is shown or hidden on its own and can be **moved anywhere** on the screen (Arrange mode). |
 | P12 | The video is a **relative touchpad** (§5.3). |
 | P13 | **One MiSTer at a time, full screen**, picked from a list; a **three-finger swipe** switches to the next/previous MiSTer. |
-| P14 | **Every on-screen element can be hidden and brought back** (keyboard, function bar, remote, control banner, stats); choices are remembered. |
+| P14 | **Every on-screen element can be hidden and brought back** (keyboard, function bar, each quick button, control banner, stats); choices are remembered. |
 | P15 | Bundle ID **com.danifunker.misterkvms**. TestFlight first, App Store after. |
 | P16 | Discovery with **Bonjour** (`NWBrowser`, `_mkvm._tcp`, which the server already advertises from Windows); typing an address always works. |
 | P17 | Not in the first version: hardware keyboard/mouse/game controller, the paste box, iPad, landscape. |
@@ -159,9 +159,14 @@ Full screen, status bar and home indicator hidden. From top:
 - **System keyboard**. Typed characters become key presses through the
   core's US-layout text mapping (`core/src/text.rs`); Backspace and Return
   are keys.
-- **Remote**: floating, translucent, draggable. D-pad with **OK** (Enter)
-  in the middle, **F12** and **⌫** (Backspace) below. Collapses to a small
-  round button; opacity adjustable.
+- **Quick buttons**, translucent (opacity adjustable), three pieces: the
+  arrows around **OK** (Enter), **F12** and **⌫** (Backspace). Each is
+  shown or hidden on its own. **Move buttons…** in the controls menu enters
+  Arrange mode: the screen dims, touches don't reach the MiSTer, each piece
+  is outlined and can be dragged anywhere; **Done** keeps the places
+  (fractions of the space above the keyboard, so they follow it).
+  **Reset positions** puts them back. Outside Arrange mode the buttons never
+  move, so pressing one can't drag it by accident.
 - **Control banner** ("Watching — *Name* has control", **Take control**),
   as on the Mac.
 
@@ -180,8 +185,8 @@ Full screen, status bar and home indicator hidden. From top:
 ### 5.4 Showing and hiding
 
 A small translucent button in a corner (and the three-finger tap) opens a
-menu with a switch per element: keyboard, function bar, remote, control
-banner, stats, audio. Hiding everything leaves only the video and touchpad;
+menu with a switch per element: keyboard, function bar, control banner,
+stats, audio, and each quick button. Hiding everything leaves only the video and touchpad;
 the three-finger tap always brings the menu back. Choices are remembered for
 the app (not per host).
 
@@ -205,8 +210,46 @@ the app (not per host).
   `xcodebuild` for the simulator or a device.
 - The Xcode project in `ios/` uses folder references (Xcode 16), so adding
   Swift files doesn't change the project file.
-- CI builds iOS only once it builds locally. TestFlight uploads use the App
-  Store Connect API key the release workflow already has for notarization.
+- `scripts/build-ios.sh --testflight` archives, signs and uploads to App
+  Store Connect. Xcode signs in the cloud with the App Store Connect API key
+  (`-allowProvisioningUpdates` with the key), so no certificate or profile
+  has to be installed anywhere.
+
+### 6.1 CI and TestFlight
+
+The `build-ios` job in `.github/workflows/release.yml` runs with the
+others. On a push to `main` (or a manual run on `main`) with the secrets
+below set, it uploads the build to TestFlight; otherwise (pull requests, no
+secrets) it only builds for the simulator. It isn't part of the GitHub
+release, and an iOS failure doesn't hold the desktop release back. The
+version is the release's (0.9.N); the build number is the workflow run
+number, which only grows, as App Store Connect requires.
+
+One-time setup:
+
+1. **App Store Connect → Apps → + → New App**: iOS, name MiSTerKVMS, bundle
+   ID `com.danifunker.misterkvms` (register it under Certificates, IDs &
+   Profiles → Identifiers first if it isn't offered), SKU e.g.
+   `misterkvms-ios`. Uploads fail until this app record exists.
+2. **The API key needs the Admin role** (or "Access to Cloud Managed
+   Distribution Certificate") for cloud signing. The notarization key
+   (`APPLE_API_KEY_P8`, `APPLE_API_KEY_ID`, `APPLE_API_ISSUER_ID`) is reused;
+   if it's a Developer key, the archive step fails with a cloud signing
+   permission error: raise its role or create an Admin key and replace the
+   three secrets.
+3. Repository secret **`APPLE_TEAM_ID`**: the 10-character Team ID
+   (developer.apple.com → Membership details).
+4. **TestFlight → Internal Testing**: add a group with yourself. Internal
+   testers get each build without Apple's review, through the TestFlight
+   app, once processing finishes (usually 5–30 minutes).
+
+The app declares no encryption (`ITSAppUsesNonExemptEncryption` = NO in
+`ios/Info.plist`) so builds aren't held for export questions. The secure
+transport (I3) changes that: then the key becomes YES and the export
+compliance answers are needed (§8). The privacy manifest
+(`PrivacyInfo.xcprivacy`) declares no tracking or data collection and the
+reasons for the system APIs used (UserDefaults, file timestamps, system
+uptime).
 
 ## 7. Milestones
 
