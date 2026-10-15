@@ -14,6 +14,7 @@ pub enum Kind {
     Subscribe = 0x02,
     Input = 0x03,
     TakeControl = 0x04,
+    Pair = 0x05,
     Ping = 0x10,
     Pong = 0x11,
     Welcome = 0x20,
@@ -25,6 +26,7 @@ pub enum Kind {
     Gap = 0x26,
     Error = 0x27,
     Status = 0x28,
+    Paired = 0x29,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -192,6 +194,31 @@ pub struct Gap {
     pub audio: u32,
 }
 
+/// Viewer → server, instead of `Hello`, on a connection from the home
+/// network: ask for a device key to connect from the internet with
+/// (docs/IPHONE.md §2). The server answers `Paired` or `Error` and closes.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Pair {
+    /// Shown on the setup page's device list ("Dani's iPhone").
+    pub device: String,
+}
+
+/// Server → viewer: the new device key (hex) and where the server can be
+/// reached from the internet ("host:port", empty if not set yet).
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
+pub struct Paired {
+    pub key_id: String,
+    pub key: String,
+    pub internet_address: String,
+}
+
+impl std::fmt::Debug for Paired {
+    // Never print the key itself.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Paired {{ key_id: {}, internet_address: {:?} }}", self.key_id, self.internet_address)
+    }
+}
+
 /// Sent before the server closes the connection.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ErrorMsg {
@@ -204,6 +231,8 @@ pub enum Message {
     Subscribe(Subscribe),
     Input(Vec<InputCmd>),
     TakeControl,
+    Pair(Pair),
+    Paired(Paired),
     /// Keep-alive. The header timestamp is the sender's clock.
     Ping,
     /// Answer to `Ping`: `echo` is the ping's timestamp, the header's is the
@@ -237,6 +266,8 @@ impl Message {
             Message::Subscribe(_) => Kind::Subscribe,
             Message::Input(_) => Kind::Input,
             Message::TakeControl => Kind::TakeControl,
+            Message::Pair(_) => Kind::Pair,
+            Message::Paired(_) => Kind::Paired,
             Message::Ping => Kind::Ping,
             Message::Pong { .. } => Kind::Pong,
             Message::Welcome(_) => Kind::Welcome,
@@ -260,6 +291,8 @@ impl Message {
             Message::Subscribe(m) => (0, json(m)),
             Message::Input(m) => (0, json(m)),
             Message::TakeControl | Message::Ping => (0, Vec::new()),
+            Message::Pair(m) => (0, json(m)),
+            Message::Paired(m) => (0, json(m)),
             Message::Pong { echo } => (0, echo.to_le_bytes().to_vec()),
             Message::Welcome(m) => (0, json(m)),
             Message::Video(v) => {
@@ -296,6 +329,7 @@ impl Message {
             0x02 => Message::Subscribe(parse(&payload)?),
             0x03 => Message::Input(parse(&payload)?),
             0x04 => Message::TakeControl,
+            0x05 => Message::Pair(parse(&payload)?),
             0x10 => Message::Ping,
             0x11 => {
                 let b: [u8; 8] = payload.as_slice().try_into().map_err(|_| "pong needs 8 bytes".to_string())?;
@@ -328,6 +362,7 @@ impl Message {
             0x26 => Message::Gap(parse(&payload)?),
             0x27 => Message::Error(parse(&payload)?),
             0x28 => Message::Status(parse(&payload)?),
+            0x29 => Message::Paired(parse(&payload)?),
             other => Message::Unknown { kind: other },
         })
     }

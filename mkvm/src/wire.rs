@@ -180,6 +180,12 @@ mod tests {
             codec: Some(Codec::H264),
             quality: Some(70),
         }));
+        round_trip(Message::Pair(Pair { device: "Dani's iPhone".into() }));
+        round_trip(Message::Paired(Paired {
+            key_id: "00112233445566778899aabbccddeeff".into(),
+            key: "ab".repeat(32),
+            internet_address: "myhome.example.org:5970".into(),
+        }));
         round_trip(Message::Input(vec![
             InputCmd::Send { m: "kbdRawDown:30".into() },
             InputCmd::Move { dx: 1.5, dy: -2.0 },

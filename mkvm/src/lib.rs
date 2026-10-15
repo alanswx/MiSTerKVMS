@@ -12,6 +12,7 @@ pub mod address;
 pub mod control;
 pub mod held;
 pub mod message;
+pub mod secure;
 pub mod wire;
 
 pub use address::StreamAddress;
