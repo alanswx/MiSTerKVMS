@@ -1,6 +1,5 @@
 //! A whole app session (controller, video source, offscreen renderer) on a
-//! capture server stream, a local capture card or an NDI source, as the
-//! apps run it. Used by `soak` and by `record` for streams and local cards,
+//! capture server stream or a local capture card, as the apps run it. Used by `soak` and by `record` for streams and local cards,
 //! so both go through the same code as the apps.
 
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -24,7 +23,6 @@ pub struct SessionSource {
     pub local: Option<String>,
     /// Its audio (id or name); None: the card's own, if one matches.
     pub local_audio: Option<String>,
-    pub ndi: Option<String>,
 }
 
 pub struct Session {
@@ -74,11 +72,7 @@ pub fn open(source: SessionSource, auto_crop: bool) -> Result<Session, String> {
             profile.local_audio = local_audio.unwrap_or_else(|| matching_audio(&l));
             profile.local_video = l;
         }
-        SessionSource { ndi: Some(n), .. } => {
-            profile.source = "ndi".into();
-            profile.ndi_source = n;
-        }
-        _ => return Err("give --stream, --local or --ndi".into()),
+        _ => return Err("give --stream or --local".into()),
     }
     profile.auto_crop = auto_crop;
     let id = profile.id.clone();

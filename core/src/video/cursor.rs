@@ -60,7 +60,7 @@ pub struct ChangeFinder {
 
 impl ChangeFinder {
     /// Compare a BGRA frame with the previous one inside `region`. Returns
-    /// None for the first frame or a frame identical to the last (OBS repeats
+    /// None for the first frame or a frame identical to the last (sources repeat
     /// frames when the capture card is slower than the canvas).
     pub fn changes(&mut self, data: &[u8], stride: usize, w: u32, h: u32, region: Crop) -> Option<Vec<Blob>> {
         if self.size != (w, h) {

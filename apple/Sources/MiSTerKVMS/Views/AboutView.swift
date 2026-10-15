@@ -36,9 +36,6 @@ struct AboutView: View {
                 Credit(title: "Keyboard & mouse") {
                     Text("[mrext Remote](https://github.com/wizzomafizzo/mrext) by wizzo and contributors.")
                 }
-                Credit(title: "Video & audio") {
-                    Text("[OBS Studio](https://obsproject.com) with the [DistroAV](https://github.com/DistroAV/DistroAV) plugin, received over [NDI®](https://ndi.video). NDI® is a registered trademark of Vizrt NDI AB.")
-                }
                 Credit(title: "Built with") {
                     Text("Rust: wgpu, cpal, tungstenite, UniFFI. Swift: SwiftUI and AppKit.")
                 }

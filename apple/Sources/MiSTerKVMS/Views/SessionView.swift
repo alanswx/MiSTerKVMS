@@ -162,26 +162,17 @@ private struct VideoPlaceholder: View {
 
     private var title: String {
         switch profile.sourceKind {
-        case "capture": profile.streamName.isEmpty ? "No stream chosen" : profile.streamName
         case "local": "Capture card on this Mac"
         default:
-            if profile.ndiSource.isEmpty { "No NDI source set" }
-            else if controller.videoError != nil { "Video unavailable" }
-            else { profile.ndiSource }
+            if !profile.streamName.isEmpty { profile.streamName }
+            else if !profile.misterHost.isEmpty { profile.misterHost }
+            else { "No stream chosen" }
         }
     }
 
     private var detail: String? {
         let state = controller.videoStats?.state
         switch profile.sourceKind {
-        case "capture":
-            if profile.streamName.isEmpty { return "Edit the host and choose a MiSTerKVMS Capture stream." }
-            if let stream = controller.stream, !stream.connected, !stream.error.isEmpty { return stream.error }
-            switch state {
-            case nil, "connecting": return "Connecting to the capture server…"
-            case "no signal": return "The capture card has no picture. Is the MiSTer on?"
-            case let other?: return other
-            }
         case "local":
             if let error = controller.videoError { return error }
             switch state {
@@ -190,16 +181,16 @@ private struct VideoPlaceholder: View {
             case let other?: return other
             }
         default:
-            if profile.ndiSource.isEmpty { return "Edit the host and choose the OBS NDI source for this MiSTer." }
-            if let error = controller.videoError { return error }
+            if profile.stream.trimmingCharacters(in: .whitespaces).isEmpty {
+                // The core looks for the stream showing this MiSTer and says so.
+                if profile.misterHost.isEmpty { return "Edit the host and choose a MiSTerKVMS Capture stream." }
+                if case .disconnected(let reason) = controller.connection { return reason }
+                return "Looking for \(profile.misterHost)'s capture stream…"
+            }
+            if let stream = controller.stream, !stream.connected, !stream.error.isEmpty { return stream.error }
             switch state {
-            case nil, "searching": return "Looking for the NDI source…"
-            case "no video": return "Connected, waiting for video"
-            case "not found":
-                if let seen = controller.videoStats?.availableSources, !seen.isEmpty {
-                    return "Not found on the network. Visible sources: \(seen.joined(separator: ", ")). Edit the host to choose one."
-                }
-                return "Not found, and no NDI sources are visible. Is OBS running with its NDI output on?"
+            case nil, "connecting": return "Connecting to the capture server…"
+            case "no signal": return "The capture card has no picture. Is the MiSTer on?"
             case let other?: return other
             }
         }
@@ -286,11 +277,7 @@ private struct StatsOverlay: View {
                 Text("src    \(v.sourceWidth)×\(v.sourceHeight)")
                 Text("crop   \(v.cropWidth)×\(v.cropHeight)")
                 Text("fps    \(v.receivedFps, format: .number.precision(.fractionLength(1))) in / \(v.renderedFps, format: .number.precision(.fractionLength(1))) drawn")
-                if controller.profile?.sourceKind == "ndi" {
-                    Text("drop   \(v.droppedFrames) ndi / \(v.skippedFrames) skipped")
-                } else {
-                    Text("drop   \(v.skippedFrames) skipped")
-                }
+                Text("drop   \(v.skippedFrames) skipped")
                 Text("age    \(ageText(v.frameAgeMs))")
                 Text("audio  \(v.audioBufferMs, format: .number.precision(.fractionLength(0))) ms buf · \(v.audioUnderruns) underruns")
                 if controller.display.predictiveCursor {
@@ -309,9 +296,9 @@ private struct StatsOverlay: View {
     }
 }
 
-/// NDI frame age needs the OBS PC and Mac clocks to agree; a value over a
-/// second almost always means they don't. (Capture streams correct for the
-/// clock difference.)
+/// Frame age is capture→screen. Capture streams correct for the clock
+/// difference between the capture PC and this Mac; a value over a second
+/// almost always means the clocks still disagree.
 private func ageText(_ ms: Double) -> String {
     if ms < 0 { return "n/a" }
     if ms > 1000 { return String(format: "clocks differ (~%.1f s)", ms / 1000) }

@@ -1,5 +1,5 @@
-//! Video + audio for one session: a source (NDI, a capture server stream
-//! or a capture card on this computer) feeding a latest-frame slot and an
+//! Video + audio for one session: a source (a capture server stream or a
+//! capture card on this computer) feeding a latest-frame slot and an
 //! audio buffer, and a render thread (slot → GPU → view).
 
 mod audio;
@@ -15,7 +15,6 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use crate::ndi::{self, Captured};
 use audio::AudioOut;
 use crop::{Crop, Stabilizer};
 use kvms_codec as codec;
@@ -30,9 +29,6 @@ use crate::session::{CursorSink, MisterSession};
 /// Where a session's pictures and sound come from.
 #[derive(Clone)]
 pub enum VideoSource {
-    /// An NDI source (legacy: OBS + DistroAV). `extra_ip` is the OBS PC's
-    /// address if discovery can't find it.
-    Ndi { source: String, extra_ip: String },
     /// A stream on a capture server.
     Link(Arc<MkvmLink>),
     /// A capture card on this computer: video device id and audio device id
@@ -43,7 +39,6 @@ pub enum VideoSource {
 impl VideoSource {
     fn describe(&self) -> String {
         match self {
-            VideoSource::Ndi { source, extra_ip } => format!("NDI '{source}' (obs host '{extra_ip}')"),
             VideoSource::Link(link) => link.address().to_string(),
             VideoSource::Local { video, audio } => format!("local '{video}' audio '{audio}'"),
         }
@@ -187,13 +182,12 @@ pub struct VideoStats {
     pub crop_height: u32,
     pub received_fps: f64,
     pub rendered_fps: f64,
-    /// Frames NDI dropped before we received them.
+    /// Frames the source dropped before we received them (0 if unknown).
     pub dropped_frames: i64,
     /// Received frames replaced by a newer one before they were drawn.
     pub skipped_frames: u64,
-    /// Average time from OBS sending a frame to us presenting it. Relies on
-    /// the two machines' clocks agreeing (NTP), so treat it as an estimate.
-    /// Negative if unknown.
+    /// Average time from capture to us presenting it (capture server
+    /// streams correct for the two clocks' difference). Negative if unknown.
     pub frame_age_ms: f64,
     pub audio_buffer_ms: f64,
     pub audio_underruns: u32,
@@ -208,8 +202,6 @@ pub struct VideoStats {
     pub cursor_detections_per_sec: f64,
     /// Good measurements behind the lag/gain (last minute).
     pub cursor_fit_samples: u32,
-    /// When `state` is "not found": the NDI sources that are visible.
-    pub available_sources: Vec<String>,
 }
 
 /// Receives the raw stream for recording. Implemented by the shell with the
@@ -234,45 +226,24 @@ pub struct CursorModel {
 
 #[derive(Debug, uniffi::Error)]
 pub enum VideoError {
-    NdiUnavailable { message: String },
     Graphics { message: String },
 }
 
 impl fmt::Display for VideoError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            VideoError::NdiUnavailable { message } | VideoError::Graphics { message } => {
-                f.write_str(message)
-            }
+            VideoError::Graphics { message } => f.write_str(message),
         }
     }
 }
 impl std::error::Error for VideoError {}
-
-/// List NDI sources visible on the network, also asking `obs_hosts` (IPs or
-/// host names, comma-separated) directly. Blocks up to `wait_ms`; call it off
-/// the main thread.
-#[uniffi::export]
-pub fn ndi_find_sources(obs_hosts: String, wait_ms: u32) -> Result<Vec<String>, VideoError> {
-    let ndi = ndi::ndi().map_err(|message| VideoError::NdiUnavailable { message })?;
-    Ok(ndi::find_sources(ndi, &obs_hosts, wait_ms))
-}
-
-/// Version string of the loaded NDI runtime, or the reason it couldn't load.
-#[uniffi::export]
-pub fn ndi_runtime_info() -> String {
-    match ndi::ndi() {
-        Ok(n) => format!("{} ({})", n.version, n.path.display()),
-        Err(e) => e,
-    }
-}
 
 struct Frame {
     data: Vec<u8>,
     stride: u32,
     width: u32,
     height: u32,
-    /// NDI send time, 100 ns units since the Unix epoch (0 if unknown).
+    /// Capture time, 100 ns units since the Unix epoch (0 if unknown).
     timestamp: i64,
 }
 
@@ -296,7 +267,6 @@ struct Counters {
     age_sum_ms: f64,
     age_count: u64,
     last_rates: Option<(Instant, u64, u64, f64, f64, f64)>,
-    available: Vec<String>,
 }
 
 struct Shared {
@@ -308,9 +278,6 @@ struct Shared {
     counters: Mutex<Counters>,
     audio: Mutex<Option<AudioOut>>,
     cursor: Mutex<CursorTracker>,
-    /// The source this session switched to because the saved one was
-    /// renamed (see `ndi::renamed_source`), until the controller saves it.
-    renamed: Mutex<Option<String>>,
     /// Recording: where frames go, and the crop fixed when recording started
     /// (so the file doesn't change size when borders are re-detected).
     sink: Mutex<Option<(Arc<dyn MediaSink>, Option<Crop>)>>,
@@ -336,40 +303,10 @@ pub struct VideoSession {
     link: Option<Arc<MkvmLink>>,
 }
 
-#[uniffi::export]
 impl VideoSession {
-    /// Start receiving `ndi_source` and drawing it into `ns_view` (an NSView
-    /// pointer). Must be called on the main thread. `extra_ip` is optional:
-    /// the OBS PC's address if discovery can't find it.
-    #[uniffi::constructor]
-    pub fn new(
-        ndi_source: String,
-        extra_ip: String,
-        ns_view: u64,
-        width_px: u32,
-        height_px: u32,
-        points_scale: f32,
-    ) -> Result<Arc<Self>, VideoError> {
-        Self::with_surface(ndi_source, extra_ip, NativeSurface::AppKit { ns_view }, width_px, height_px, points_scale)
-    }
-
-    /// Like `new`, for any kind of native view. `points_scale` is the
-    /// display's pixels per point (Windows: DPI / 96).
-    #[uniffi::constructor]
-    pub fn with_surface(
-        ndi_source: String,
-        extra_ip: String,
-        surface: NativeSurface,
-        width_px: u32,
-        height_px: u32,
-        points_scale: f32,
-    ) -> Result<Arc<Self>, VideoError> {
-        Self::start(VideoSource::Ndi { source: ndi_source, extra_ip }, surface, None, width_px, height_px, points_scale)
-    }
-}
-
-impl VideoSession {
-    /// `with_surface`, plus where `Offscreen` pictures go.
+    /// Start receiving `source` and drawing it into `surface`; `frames`:
+    /// where `Offscreen` pictures go. `points_scale` is the display's pixels
+    /// per point (Windows: DPI / 96).
     pub fn start(
         source: VideoSource,
         surface: NativeSurface,
@@ -378,10 +315,6 @@ impl VideoSession {
         height_px: u32,
         points_scale: f32,
     ) -> Result<Arc<Self>, VideoError> {
-        let ndi = match &source {
-            VideoSource::Ndi { .. } => Some(ndi::ndi().map_err(|message| VideoError::NdiUnavailable { message })?),
-            _ => None,
-        };
         log(&format!("video: start {} ({width_px}x{height_px} px)", source.describe()));
         // SAFETY: the shell keeps the view alive until stop() returns.
         let (instance, surface) = unsafe { render::create_surface(&surface) }
@@ -397,7 +330,6 @@ impl VideoSession {
             audio: Mutex::new(None),
             cursor: Mutex::new(CursorTracker::default()),
             sink: Mutex::new(None),
-            renamed: Mutex::new(None),
         });
 
         match AudioOut::start() {
@@ -435,16 +367,6 @@ impl VideoSession {
         let mut threads = vec![render];
         let mut link = None;
         match source {
-            VideoSource::Ndi { source, extra_ip } => {
-                let ndi = ndi.expect("loaded above");
-                let recv_shared = shared.clone();
-                threads.push(
-                    thread::Builder::new()
-                        .name("ndi-receive".into())
-                        .spawn(move || receive_loop(ndi, source, extra_ip, recv_shared))
-                        .map_err(|e| VideoError::Graphics { message: e.to_string() })?,
-                );
-            }
             VideoSource::Link(l) => {
                 shared.counters.lock().unwrap().state = "connecting".into();
                 let sink = LinkSink { shared: shared.clone(), deliver: Mutex::new((Deliver::default(), codec::Bgra::default())) };
@@ -577,14 +499,7 @@ impl VideoSession {
             audio_buffer_ms: audio.as_ref().map_or(0.0, |a| a.buffered_ms()),
             audio_underruns: audio.as_ref().map_or(0, |a| a.underruns()),
             audio_rate: audio.as_ref().map_or(0, |a| a.rate),
-            available_sources: c.available.clone(),
         }
-    }
-
-    /// The NDI source this session moved to because the saved name was
-    /// gone and a renamed one was found; returned once, to be saved.
-    pub fn take_renamed_source(&self) -> Option<String> {
-        self.shared.renamed.lock().unwrap().take()
     }
 
     /// Stop receiving and drawing. Blocks until the render thread has let go
@@ -631,104 +546,6 @@ fn panic_message(panic: &Box<dyn std::any::Any + Send>) -> String {
 
 fn now_100ns() -> i64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| (d.as_nanos() / 100) as i64)
-}
-
-/// Only report video as gone after this long without a frame: NDI often
-/// has short gaps, and every state change flashes the UI.
-const VIDEO_GONE_AFTER: Duration = Duration::from_secs(1);
-/// Without a connection this long, check the source is on the network.
-const SOURCE_CHECK_AFTER: Duration = Duration::from_secs(4);
-const SOURCE_CHECK_EVERY: Duration = Duration::from_secs(10);
-
-fn receive_loop(ndi: &'static ndi::Ndi, source: String, extra_ip: String, shared: Arc<Shared>) {
-    let mut source = source;
-    // Record state changes, and log them so a stuck screen can be diagnosed.
-    let set_state = |source: &str, s: &str| {
-        let mut c = shared.counters.lock().unwrap();
-        if c.state != s {
-            log(&format!("video: '{source}' {} -> {s}", c.state));
-            c.state = s.into();
-        }
-    };
-    let cancelled = || shared.stop.load(Ordering::Relaxed);
-    let Some(mut rx) = ndi::Receiver::with_cancel(ndi, &source, &extra_ip, "MiSTerKVMS", &cancelled) else {
-        if !cancelled() {
-            set_state(&source, "could not create NDI receiver");
-        }
-        return;
-    };
-    let mut next_source_check = Instant::now() + SOURCE_CHECK_AFTER;
-    let mut last_video = Instant::now();
-    let mut deliver = Deliver::default();
-    let mut last_perf = Instant::now();
-
-    while !shared.stop.load(Ordering::Relaxed) {
-        let mut check_source = false;
-        match rx.capture(100) {
-            Captured::Video(v) => {
-                last_video = Instant::now();
-                let (w, h, stride) = (v.frame.xres as u32, v.frame.yres as u32, v.stride() as u32);
-                let timestamp = match v.frame.timestamp {
-                    ndi::sys::NDIlib_recv_timestamp_undefined => 0,
-                    t => t,
-                };
-                deliver.video(&shared, v.data(), stride, w, h, timestamp);
-                if shared.counters.lock().unwrap().state != "connected" {
-                    set_state(&source, "connected");
-                }
-            }
-            Captured::Audio(a) => {
-                if a.frame.FourCC == ndi::sys::NDIlib_FourCC_audio_type_FLTP {
-                    let planes: Vec<&[f32]> = (0..a.frame.no_channels.max(0) as usize).map(|ch| a.channel(ch)).collect();
-                    let timestamp = match a.frame.timestamp {
-                        ndi::sys::NDIlib_recv_timestamp_undefined => now_100ns(),
-                        t => t,
-                    };
-                    deliver_audio(&shared, &planes, a.frame.sample_rate as u32, timestamp);
-                }
-            }
-            Captured::Nothing => {
-                let state = shared.counters.lock().unwrap().state.clone();
-                if state == "connected" && last_video.elapsed() >= VIDEO_GONE_AFTER {
-                    set_state(&source, if rx.connections() == 0 { "searching" } else { "no video" });
-                }
-                check_source = rx.connections() == 0 && Instant::now() >= next_source_check;
-            }
-            Captured::Error => set_state(&source, "NDI connection lost"),
-            Captured::Other => {}
-        }
-        // Not connecting: is the source there at all? OBS can rename a
-        // source between sessions.
-        if check_source && !cancelled() {
-            next_source_check = Instant::now() + SOURCE_CHECK_EVERY;
-            let seen = ndi::find_sources(ndi, &extra_ip, 1000);
-            match ndi::renamed_source(&source, &seen) {
-                // It's there (just slow to connect), or we're closing.
-                _ if seen.contains(&source) || cancelled() => {}
-                Some(renamed) => {
-                    log(&format!("video: '{source}' not on the network; switching to '{renamed}'"));
-                    match ndi::Receiver::with_cancel(ndi, &renamed, &extra_ip, "MiSTerKVMS", &cancelled) {
-                        Some(new_rx) => {
-                            rx = new_rx;
-                            source = renamed.clone();
-                            *shared.renamed.lock().unwrap() = Some(renamed);
-                            next_source_check = Instant::now() + SOURCE_CHECK_AFTER;
-                            set_state(&source, "searching");
-                        }
-                        None => set_state(&source, "could not create NDI receiver"),
-                    }
-                }
-                None => {
-                    shared.counters.lock().unwrap().available = seen;
-                    set_state(&source, "not found");
-                }
-            }
-        }
-        if last_perf.elapsed() > Duration::from_secs(1) {
-            last_perf = Instant::now();
-            shared.counters.lock().unwrap().dropped = rx.video_performance().1;
-        }
-    }
 }
 
 /// Hand a frame to the recorder, cropped to the picture area that was

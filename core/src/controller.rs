@@ -43,7 +43,7 @@ pub struct ControllerState {
     pub stats_pinned: bool,
     pub input_stats: Option<InputStats>,
     pub video_stats: Option<VideoStats>,
-    /// Why there's no video (NDI missing, GPU error).
+    /// Why there's no video (e.g. a GPU error).
     pub video_error: Option<String>,
     pub display: DisplaySettings,
     pub muted: bool,
@@ -213,7 +213,6 @@ impl Controller {
     pub fn save_profile(&self, profile: HostProfile) {
         let mut profile = profile;
         profile.mister_host = profile.mister_host.trim().to_string();
-        profile.obs_host = profile.obs_host.trim().to_string();
         if let Some(before) = self.inner.store.get(&profile.id) {
             // Keep what was learned meanwhile (the editor had an older copy).
             profile.cursor_lag_ms = before.cursor_lag_ms;
@@ -273,13 +272,12 @@ impl Controller {
             return;
         }
         log(&format!(
-            "host: open '{}' source {:?} stream '{}' local '{}' mister {} ndi '{}'",
+            "host: open '{}' source {:?} stream '{}' local '{}' mister {}",
             profile.name,
             profile.source_kind(),
             profile.stream,
             profile.local_video,
-            profile.mister_host,
-            profile.ndi_source
+            profile.mister_host
         ));
         self.close();
         let viewer = self.viewer_name();
@@ -290,21 +288,17 @@ impl Controller {
             s.generation += 1;
             let observer = Arc::new(Observer { inner: Arc::downgrade(&self.inner), generation: s.generation });
             if profile.source_kind() == SourceKind::Capture && profile.stream.trim().is_empty() {
-                s.connection = ConnectionState::Disconnected { reason: "no capture stream chosen".into() };
-            } else if profile.source_kind() == SourceKind::Capture {
-                match mkvm::StreamAddress::parse(&profile.stream) {
-                    Ok(address) => {
-                        let link = MkvmLink::connect(address, viewer);
-                        let (w, h) = profile.max_size();
-                        link.set_quality(w, h, None);
-                        let session = MisterSession::with_link(link.clone(), observer);
-                        session.set_settings(profile.input_settings());
-                        s.session = Some(session);
-                        s.link = Some(link);
-                        s.capture_on_connect = true;
-                    }
-                    Err(e) => s.connection = ConnectionState::Disconnected { reason: e },
+                if profile.mister_host.trim().is_empty() {
+                    s.connection = ConnectionState::Disconnected { reason: "no capture stream chosen".into() };
+                } else {
+                    // A host without a stream (e.g. saved when it used NDI):
+                    // use the stream that shows its MiSTer.
+                    s.connection = ConnectionState::Disconnected { reason: format!("looking for {}'s capture stream", profile.mister_host) };
+                    let (inner, generation, profile) = (self.inner.clone(), s.generation, profile.clone());
+                    thread::spawn(move || inner.find_stream_for(profile, generation, viewer));
                 }
+            } else if profile.source_kind() == SourceKind::Capture {
+                self.inner.connect_capture(&mut s, &profile, viewer, observer);
             } else if profile.mister_host.is_empty() {
                 s.connection = ConnectionState::Disconnected { reason: "no MiSTer address set".into() };
             } else {
@@ -415,7 +409,7 @@ impl Controller {
     // MARK: Video surface
 
     /// The view the video is drawn into, its size in pixels and pixels per
-    /// point. Video starts whenever a host with an NDI source is open. The
+    /// point. Video starts whenever a host with a source is open. The
     /// view must stay valid until `detach_surface` (macOS: call on the main
     /// thread).
     pub fn attach_surface(&self, surface: NativeSurface, width_px: u32, height_px: u32, points_scale: f32) {
@@ -769,7 +763,7 @@ impl Inner {
         }
     }
 
-    /// Start video if a host with an NDI source is open and there's a view.
+    /// Start video if a host with a source is open and there's a view.
     fn start_video(&self) {
         let mut s = self.state.lock().unwrap();
         let (Some(profile), Some((surface, w, h, scale))) = (s.profile.clone(), s.surface.clone()) else {
@@ -785,9 +779,6 @@ impl Inner {
             },
             SourceKind::Local if !profile.local_video.is_empty() => {
                 VideoSource::Local { video: profile.local_video.clone(), audio: profile.local_audio.clone() }
-            }
-            SourceKind::Ndi if !profile.ndi_source.is_empty() => {
-                VideoSource::Ndi { source: profile.ndi_source.clone(), extra_ip: profile.obs_host.clone() }
             }
             _ => return,
         };
@@ -895,18 +886,56 @@ impl Inner {
         self.notify(ControllerEvent::Changed);
     }
 
-    /// The open host's NDI source was renamed (and video already moved to
-    /// the new name): remember it.
-    fn source_renamed(&self, renamed: String) {
-        let id = {
-            let mut s = self.state.lock().unwrap();
-            let Some(profile) = s.profile.as_mut() else { return };
-            profile.ndi_source = renamed.clone();
-            profile.id.clone()
+    /// Connect a capture server stream host (the state's generation is the
+    /// observer's).
+    fn connect_capture(&self, s: &mut State, profile: &HostProfile, viewer: String, observer: Arc<Observer>) {
+        match mkvm::StreamAddress::parse(&profile.stream) {
+            Ok(address) => {
+                let link = MkvmLink::connect(address, viewer);
+                let (w, h) = profile.max_size();
+                link.set_quality(w, h, None);
+                let session = MisterSession::with_link(link.clone(), observer);
+                session.set_settings(profile.input_settings());
+                s.session = Some(session);
+                s.link = Some(link);
+                s.capture_on_connect = true;
+            }
+            Err(e) => s.connection = ConnectionState::Disconnected { reason: e },
+        }
+    }
+
+    /// Find the capture stream that shows `profile`'s MiSTer, save it, and
+    /// connect if the host is still the open one.
+    fn find_stream_for(self: Arc<Self>, profile: HostProfile, generation: u64, viewer: String) {
+        let host = profile.mister_host.trim().to_lowercase();
+        let found = crate::discover::find_streams(3000).into_iter().find(|f| f.mister.trim().to_lowercase() == host);
+        let mut s = self.state.lock().unwrap();
+        if s.generation != generation {
+            return;
+        }
+        let Some(found) = found else {
+            s.connection = ConnectionState::Disconnected {
+                reason: format!("no capture stream shows {}: choose one in the host's settings", profile.mister_host),
+            };
+            drop(s);
+            self.notify(ControllerEvent::Changed);
+            return;
         };
-        log(&format!("host: NDI source is now '{renamed}'"));
-        self.store.update(&id, |p| p.ndi_source = renamed);
+        log(&format!("host: '{}' uses stream {} ({})", profile.name, found.name, found.address));
+        let mut profile = profile;
+        profile.source = "capture".into();
+        profile.stream = found.address.clone();
+        self.store.update(&profile.id, |p| {
+            p.source = "capture".into();
+            p.stream = found.address.clone();
+        });
+        s.profile = Some(profile.clone());
+        let observer = Arc::new(Observer { inner: Arc::downgrade(&self), generation });
+        self.connect_capture(&mut s, &profile, viewer, observer);
+        drop(s);
+        self.start_video();
         self.notify(ControllerEvent::ProfilesChanged);
+        self.notify(ControllerEvent::Changed);
     }
 
     fn tick(&self) {
@@ -916,11 +945,7 @@ impl Inner {
         };
         let stream = link.map(|l| l.stream_state());
         let input_stats = session.map(|s| s.stats());
-        let renamed = video.as_ref().and_then(|v| v.take_renamed_source());
         let video_stats = video.map(|v| v.stats());
-        if let Some(renamed) = renamed {
-            self.source_renamed(renamed);
-        }
         let (save_model, lost_control) = {
             let mut s = self.state.lock().unwrap();
             // Someone took control: stop capturing here.
@@ -1084,7 +1109,20 @@ mod tests {
         c.save_profile(p.clone());
         c.open(p.id);
         assert_eq!(c.state().connection, ConnectionState::Disconnected { reason: "no capture stream chosen".into() });
+        // A blank host is a capture host.
         let p = HostProfile::default();
+        c.save_profile(p.clone());
+        c.open(p.id);
+        assert_eq!(c.state().connection, ConnectionState::Disconnected { reason: "no capture stream chosen".into() });
+        // Saved when it used NDI: looks for its MiSTer's stream.
+        let p = HostProfile { source: "ndi".into(), mister_host: "192.0.2.7".into(), ..Default::default() };
+        c.save_profile(p.clone());
+        c.open(p.id);
+        assert_eq!(
+            c.state().connection,
+            ConnectionState::Disconnected { reason: "looking for 192.0.2.7's capture stream".into() }
+        );
+        let p = HostProfile { source: "local".into(), local_video: "test:pattern".into(), ..Default::default() };
         c.save_profile(p.clone());
         c.open(p.id);
         assert_eq!(
@@ -1171,7 +1209,7 @@ mod tests {
     fn unreachable_mister_disconnects_and_capture_releases() {
         let (c, events) = controller();
         // Port 9 on localhost: nothing listens, so the connect fails fast.
-        let p = HostProfile { source: "ndi".into(), mister_host: "127.0.0.1".into(), mister_port: 9, ..Default::default() };
+        let p = HostProfile { source: "local".into(), mister_host: "127.0.0.1".into(), mister_port: 9, ..Default::default() };
         c.save_profile(p.clone());
         c.open(p.id);
         let deadline = Instant::now() + Duration::from_secs(5);

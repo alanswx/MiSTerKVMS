@@ -1,6 +1,5 @@
 {
   "default": "mister1",
-  "obs_host": "obs-pc.local",
   "ssh_user": "root",
   "core_dest": "/media/fat/_Development",
   "type_delay_ms": 50,
@@ -8,11 +7,11 @@
   "machines": {
     "mister1": {
       "mister_host": "192.168.1.50",
-      "ndi_source": "OBSPC (MiSTer-1)"
+      "stream": "mkvm://capture-pc/MiSTer-1"
     },
     "mister2": {
       "mister_host": "192.168.1.51",
-      "ndi_source": "OBSPC (MiSTer-2)",
+      "local": "UGREEN 25773",
       "type_delay_ms": 80
     }
   }

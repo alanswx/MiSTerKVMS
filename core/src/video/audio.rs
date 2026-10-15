@@ -1,4 +1,4 @@
-//! Plays NDI audio on the default output device with a small, bounded buffer
+//! Plays the source's audio on the default output device with a small, bounded buffer
 //! so sound stays close to the picture.
 
 use std::collections::VecDeque;

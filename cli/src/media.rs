@@ -1,11 +1,15 @@
-//! Video/audio from the MiSTer's NDI stream: frames, PNGs, WAV and MP4.
+//! Video/audio from a capture server stream or a card on this computer,
+//! through a whole app session: frames, PNGs, WAV and MP4.
 
 use std::io::Write;
 use std::path::Path;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-use kvms_core::ndi::{self, Captured, Receiver};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender};
+use std::sync::Arc;
+
+use kvms_core::video::MediaSink;
 use kvms_core::video::crop::{self, Crop};
 
 pub struct Frame {
@@ -13,9 +17,8 @@ pub struct Frame {
     pub stride: usize,
     pub width: u32,
     pub height: u32,
-    /// 100 ns units, sender clock.
+    /// 100 ns units, this computer's clock (audio uses the same).
     pub timestamp: i64,
-    pub fps: f64,
 }
 
 impl Frame {
@@ -73,54 +76,80 @@ impl Frame {
     }
 }
 
-pub struct Source {
-    rx: Receiver,
-}
-
 pub enum Item {
     Video(Frame),
     /// Interleaved samples.
     Audio { samples: Vec<f32>, channels: u32, rate: u32, timestamp: i64 },
 }
 
+/// Pictures and sound as the session receives them: the feed the apps'
+/// recorders get. Video is bounded (a slow reader skips frames), audio
+/// isn't (it's small, and gaps would be audible).
+struct ChannelSink {
+    video: SyncSender<Frame>,
+    audio: mpsc::Sender<Item>,
+}
+
+impl MediaSink for ChannelSink {
+    fn video_frame(&self, data: u64, stride: u32, width: u32, height: u32, timestamp: i64) {
+        if width == 0 || height == 0 {
+            return;
+        }
+        let len = stride as usize * (height as usize - 1) + width as usize * 4;
+        // SAFETY: the session passes a picture of `height` rows `stride`
+        // bytes apart, valid for the duration of this call.
+        let pixels = unsafe { std::slice::from_raw_parts(data as *const u8, len) };
+        let _ = self.video.try_send(Frame { data: pixels.to_vec(), stride: stride as usize, width, height, timestamp });
+    }
+
+    fn audio_frame(&self, samples: Vec<f32>, channels: u32, sample_rate: u32, timestamp: i64) {
+        let _ = self.audio.send(Item::Audio { samples, channels, rate: sample_rate, timestamp });
+    }
+}
+
+pub struct Source {
+    session: crate::session::Session,
+    video: Receiver<Frame>,
+    audio: Receiver<Item>,
+}
+
 impl Source {
-    pub fn open(name: &str, extra_ip: &str) -> Result<Self, String> {
-        let ndi = ndi::ndi()?;
-        let rx = Receiver::new(ndi, name, extra_ip, "misterkvms-cli").ok_or("could not create NDI receiver")?;
-        Ok(Self { rx })
+    /// Open the source and wait for its picture. Borders are left in
+    /// (callers crop with `Frame::area`).
+    pub fn open(source: crate::session::SessionSource) -> Result<Self, String> {
+        let session = crate::session::open(source, false)?;
+        session.wait_connected(Duration::from_secs(15))?;
+        let (video_tx, video) = mpsc::sync_channel(8);
+        let (audio_tx, audio) = mpsc::channel();
+        session
+            .core
+            .start_recording_with_sink(Arc::new(ChannelSink { video: video_tx, audio: audio_tx }))
+            .map_err(|e| e.to_string())?;
+        Ok(Self { session, video, audio })
+    }
+
+    /// Frames per second arriving now (0 until measured).
+    pub fn fps(&self) -> f64 {
+        self.session.core.state().video_stats.map_or(0.0, |v| v.received_fps)
     }
 
     pub fn next(&self, timeout_ms: u32) -> Option<Item> {
-        match self.rx.capture(timeout_ms) {
-            Captured::Video(v) => {
-                let fps = v.frame.frame_rate_N as f64 / v.frame.frame_rate_D.max(1) as f64;
-                Some(Item::Video(Frame {
-                    data: v.data().to_vec(),
-                    stride: v.stride(),
-                    width: v.frame.xres as u32,
-                    height: v.frame.yres as u32,
-                    timestamp: v.frame.timestamp,
-                    fps,
-                }))
+        if let Ok(a) = self.audio.try_recv() {
+            return Some(a);
+        }
+        let until = Instant::now() + Duration::from_millis(timeout_ms as u64);
+        loop {
+            match self.video.recv_timeout(Duration::from_millis(5)) {
+                Ok(f) => return Some(Item::Video(f)),
+                Err(RecvTimeoutError::Disconnected) => return None,
+                Err(RecvTimeoutError::Timeout) => {}
             }
-            Captured::Audio(a) if a.frame.FourCC == ndi::sys::NDIlib_FourCC_audio_type_FLTP => {
-                let ch = a.frame.no_channels.max(1) as usize;
-                let planes: Vec<&[f32]> = (0..ch).map(|c| a.channel(c)).collect();
-                let n = a.frame.no_samples as usize;
-                let mut samples = Vec::with_capacity(n * ch);
-                for i in 0..n {
-                    for p in &planes {
-                        samples.push(p[i]);
-                    }
-                }
-                Some(Item::Audio {
-                    samples,
-                    channels: ch as u32,
-                    rate: a.frame.sample_rate as u32,
-                    timestamp: a.frame.timestamp,
-                })
+            if let Ok(a) = self.audio.try_recv() {
+                return Some(a);
             }
-            _ => None,
+            if Instant::now() >= until {
+                return None;
+            }
         }
     }
 
@@ -132,7 +161,7 @@ impl Source {
                 return Ok(f);
             }
         }
-        Err("no video from the NDI source (is OBS sending it?)".into())
+        Err("no video from the source".into())
     }
 
     /// A frame that's current now: skip whatever was queued, then take the next.
@@ -143,6 +172,12 @@ impl Source {
     }
 }
 
+impl Drop for Source {
+    fn drop(&mut self) {
+        self.session.core.stop_recording();
+        self.session.core.recording_finished(None, None);
+    }
+}
 pub fn write_wav(path: &Path, samples: &[f32], channels: u32, rate: u32) -> Result<(), String> {
     let data_len = (samples.len() * 2) as u32;
     let mut out = Vec::with_capacity(44 + data_len as usize);
@@ -181,6 +216,11 @@ pub fn record(src: &Source, duration: Duration, out: &Path, full: bool) -> Resul
     };
     let first = src.fresh_frame(Duration::from_secs(5))?;
     let area = first.area(full);
+    // What the source sends, rounded (59.94 stays 59.94); 60 until measured.
+    let fps = match src.fps() {
+        f if f > 1.0 => (f * 100.0).round() / 100.0,
+        _ => 60.0,
+    };
     let start_ts = first.timestamp;
     let tmp = std::env::temp_dir().join(format!("misterkvms-rec-{}", std::process::id()));
     std::fs::create_dir_all(&tmp).map_err(|e| e.to_string())?;
@@ -191,7 +231,7 @@ pub fn record(src: &Source, duration: Duration, out: &Path, full: bool) -> Resul
         Some(
             Command::new("ffmpeg")
                 .args(["-hide_banner", "-loglevel", "error", "-y", "-f", "rawvideo", "-pix_fmt", "bgra"])
-                .args(["-s", &format!("{}x{}", area.w, area.h), "-framerate", &format!("{:.3}", first.fps)])
+                .args(["-s", &format!("{}x{}", area.w, area.h), "-framerate", &format!("{fps:.3}")])
                 .args(["-i", "-", "-c:v", "libx264", "-preset", "veryfast", "-crf", "16", "-pix_fmt", "yuv420p"])
                 .arg(&tmp_video)
                 .stdin(Stdio::piped())
@@ -261,6 +301,6 @@ pub fn record(src: &Source, duration: Duration, out: &Path, full: bool) -> Resul
         frames,
         audio_seconds: audio.len() as f64 / channels.max(1) as f64 / rate.max(1) as f64,
         size: (area.w, area.h),
-        fps: first.fps,
+        fps,
     })
 }

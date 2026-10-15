@@ -99,8 +99,8 @@ public sealed class HostProfile
 {
     public string Id { get; set; } = "";
     public string Name { get; set; } = "";
-    /// <summary>"capture", "local", "ndi", or "" (decided by which of
-    /// Stream, LocalVideo and NdiSource is set).</summary>
+    /// <summary>"capture", "local", or "" ("local" if LocalVideo is set,
+    /// else "capture").</summary>
     public string Source { get; set; } = "";
     /// <summary>Capture server stream, mkvm://host/stream.</summary>
     public string Stream { get; set; } = "";
@@ -110,8 +110,6 @@ public sealed class HostProfile
     public string Quality { get; set; } = "auto";
     public string MisterHost { get; set; } = "";
     public ushort MisterPort { get; set; } = 8182;
-    public string ObsHost { get; set; } = "";
-    public string NdiSource { get; set; } = "";
     public double MouseSensitivity { get; set; } = 1;
     public bool AltClickIsMiddle { get; set; } = true;
     public bool RawMouse { get; set; }
@@ -128,10 +126,11 @@ public sealed class HostProfile
     [JsonIgnore]
     public string SourceKind => Source switch
     {
-        "capture" or "local" or "ndi" => Source,
-        _ when Stream.Trim().Length > 0 => "capture",
+        "capture" or "local" => Source,
+        // Older profiles may still say "ndi"; the core opens them as capture hosts.
+        "ndi" => "capture",
         _ when LocalVideo.Length > 0 => "local",
-        _ => "ndi",
+        _ => "capture",
     };
 
     /// <summary>The stream's name, from its address.</summary>
@@ -247,8 +246,6 @@ public sealed class VideoStats
     public double CursorErrorPx { get; set; }
     public double CursorDetectionsPerSec { get; set; }
     public uint CursorFitSamples { get; set; }
-    /// <summary>When State is "not found": the sources that are visible.</summary>
-    public List<string> AvailableSources { get; set; } = [];
 }
 
 public sealed class ControllerState

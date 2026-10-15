@@ -258,13 +258,11 @@ jobs:
 
           **Windows:** 64-bit Windows 10 or 11. Unzip \`MiSTerKVMS-$VERSION-win-x64.zip\` anywhere and run **MiSTerKVMS.exe**. Not code-signed yet: SmartScreen may warn the first time (More info → Run anyway). Recording needs [ffmpeg](https://ffmpeg.org) (\`winget install ffmpeg\`).
 
-          **Capture server (preview):** \`misterkvms-capture\` streams capture cards to MiSTerKVMS without OBS or NDI. Close OBS, run \`misterkvms-capture.exe\` from the Windows zip (on the Mac: \`/Applications/MiSTerKVMS.app/Contents/MacOS/misterkvms-capture\`), then open http://localhost:5971 on that computer and add a stream for each card. In the app, edit a host and choose **MiSTerKVMS Capture**. On Windows, **Run in the background** on that page installs it as a service that starts with the PC, and **Check for updates** there updates it from this page's releases (\`misterkvms-capture-$VERSION-win-x64.exe\`).
+          **MiSTerKVMS Capture** (the PC with the capture cards): run \`misterkvms-capture.exe\` from the Windows zip (on the Mac: \`/Applications/MiSTerKVMS.app/Contents/MacOS/misterkvms-capture\`); its setup page opens at http://localhost:5971. Add a stream for each card there. On Windows, **Run in the background** installs it as a service that starts with the PC, and **Check for updates** updates it from these releases (\`misterkvms-capture-$VERSION-win-x64.exe\`). In the app, add a host and pick the stream, or a capture card plugged into that computer (Windows and Mac).
 
-          **Linux:** x86_64, GNOME/KDE on Wayland (X11 works too); needs GTK 4.14+ and libadwaita 1.5+ (Ubuntu 24.04, Fedora 40 or newer). Unpack \`MiSTerKVMS-$VERSION-linux-x86_64.tar.gz\` and run \`./install.sh\` (or \`./misterkvms\` in place). Needs the [NDI runtime for Linux](https://ndi.video/tools/) (\`libndi.so.6\`) and avahi-daemon for discovery; recording needs ffmpeg.
+          **Linux:** x86_64, GNOME/KDE on Wayland (X11 works too); needs GTK 4.14+ and libadwaita 1.5+ (Ubuntu 24.04, Fedora 40 or newer). Unpack \`MiSTerKVMS-$VERSION-linux-x86_64.tar.gz\` and run \`./install.sh\` (or \`./misterkvms\` in place). Watches MiSTerKVMS Capture streams; recording needs ffmpeg.
 
-          Requirements: [NDI Tools or the NDI Runtime](https://ndi.video/tools/) on the Mac, [mrext Remote](https://github.com/wizzomafizzo/mrext) on the MiSTer, and OBS with the [DistroAV](https://github.com/DistroAV/DistroAV) NDI plugin. See the [setup guide](https://github.com/${{ github.repository }}/blob/main/docs/SETUP-NDI.md).
-
-          NDI® is a registered trademark of Vizrt NDI AB.
+          Requirements: [mrext Remote](https://github.com/wizzomafizzo/mrext) on the MiSTer. NDI, OBS and DistroAV are no longer used: hosts that used them switch to the capture stream showing the same MiSTer.
           EOF
           # The release files themselves; a folder means an artifact got unpacked.
           if [ -n "$(find dist -mindepth 1 -type d)" ]; then

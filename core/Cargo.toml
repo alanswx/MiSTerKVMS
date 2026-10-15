@@ -1,6 +1,6 @@
 [package]
 name = "kvms-core"
-description = "Platform-independent core for MiSTerKVMS: mrext input, sessions, (later) NDI video/audio."
+description = "Platform-independent core for MiSTerKVMS: mrext input, sessions, video and audio from capture server streams and local capture cards."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -12,7 +12,6 @@ crate-type = ["lib", "staticlib", "cdylib"]
 [dependencies]
 uniffi = "0.32"
 tungstenite = { version = "0.30", default-features = false, features = ["handshake"] }
-libloading = "0.9"
 wgpu = "30"
 raw-window-handle = "0.6"
 pollster = "0.4"

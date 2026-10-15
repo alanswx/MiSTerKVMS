@@ -58,15 +58,15 @@ final class ProfileStore: ObservableObject {
 
 extension HostProfile {
     /// Where video comes from: "capture" (a capture server stream), "local"
-    /// (a card on this Mac) or "ndi". An empty `source` is inferred from
-    /// which field is filled, as the core does.
+    /// (a card on this Mac). Any other `source` (empty, or the removed "ndi")
+    /// is inferred from which field is filled, as the core does.
     var sourceKind: String {
         switch source {
-        case "capture", "local", "ndi": source
+        case "capture", "local": source
         default:
             if !stream.trimmingCharacters(in: .whitespaces).isEmpty { "capture" }
             else if !localVideo.isEmpty { "local" }
-            else { "ndi" }
+            else { "capture" }
         }
     }
 
@@ -82,9 +82,11 @@ extension HostProfile {
     /// The host list's second line.
     var subtitle: String {
         switch sourceKind {
-        case "capture": streamName.isEmpty ? "No stream chosen" : "Stream \(streamName)"
         case "local": "Capture card on this Mac"
-        default: misterHost.isEmpty ? "No address" : misterHost
+        default:
+            if !streamName.isEmpty { "Stream \(streamName)" }
+            else if !misterHost.isEmpty { misterHost }
+            else { "No stream chosen" }
         }
     }
 }

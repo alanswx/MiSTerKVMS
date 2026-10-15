@@ -37,9 +37,6 @@ public sealed class AboutDialog : ContentDialog
             ("MiSTer FPGA project", "https://github.com/MiSTer-devel/Main_MiSTer/wiki"), " by Sorgelig and contributors.");
         Credit(panel, "Keyboard & mouse",
             ("mrext Remote", "https://github.com/wizzomafizzo/mrext"), " by wizzo and contributors.");
-        Credit(panel, "Video & audio",
-            ("OBS Studio", "https://obsproject.com"), " with the ", ("DistroAV", "https://github.com/DistroAV/DistroAV"),
-            " plugin, received over ", ("NDI®", "https://ndi.video"), ". NDI® is a registered trademark of Vizrt NDI AB.");
         Credit(panel, "Built with", "Rust: wgpu, cpal, tungstenite. C#: WinUI 3 and the Windows App SDK.");
 
         var footer = Secondary("MIT License · ", center: true);

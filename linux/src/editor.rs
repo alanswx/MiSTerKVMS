@@ -1,43 +1,67 @@
-//! Add or edit a host: the MiSTer, its NDI source, mouse options.
+//! Add or edit a host: its capture server stream, the MiSTer, mouse options.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use adw::prelude::*;
 use gtk::glib;
+use kvms_core::discover::FoundStream;
 use kvms_core::profiles::HostProfile;
+
+/// What a profile saves as its quality, and how the editor shows it.
+const QUALITIES: [(&str, &str); 4] = [
+    ("auto", "Automatic"),
+    ("best", "Best (full size, for wired networks)"),
+    ("balanced", "Balanced (up to 1080p)"),
+    ("low", "Low (up to 720p, for slow Wi-Fi)"),
+];
 
 pub fn show(parent: &impl IsA<gtk::Widget>, profile: HostProfile, is_new: bool, on_save: impl Fn(HostProfile, bool) + 'static) {
     let name = adw::EntryRow::builder().title("Name").text(profile.name.as_str()).build();
+
+    // Streams found on the network, and the address actually saved (picking
+    // one fills it in; it can also be typed).
+    let found = gtk::StringList::new(&[]);
+    let streams: Rc<RefCell<Vec<FoundStream>>> = Rc::default();
+    let pick = adw::ComboRow::builder().title("Stream").model(&found).build();
+    pick.set_selected(gtk::INVALID_LIST_POSITION);
+    let find = gtk::Button::builder().icon_name("view-refresh-symbolic").valign(gtk::Align::Center).build();
+    find.set_tooltip_text(Some("Look for streams again"));
+    find.add_css_class("flat");
+    let spinner = gtk::Spinner::builder().spinning(true).build();
+    spinner.set_visible(false);
+    pick.add_suffix(&spinner);
+    pick.add_suffix(&find);
+    let stream = adw::EntryRow::builder().title("Address (pc/stream or mkvm://pc/stream)").text(profile.stream.as_str()).build();
+    let quality = adw::ComboRow::builder()
+        .title("Quality")
+        .model(&gtk::StringList::new(&QUALITIES.map(|(_, label)| label)))
+        .build();
+    quality.set_selected(QUALITIES.iter().position(|(value, _)| *value == profile.quality).unwrap_or(0) as u32);
+    let video = adw::PreferencesGroup::builder()
+        .title("Video and audio")
+        .description(
+            "Streams come from MiSTerKVMS Capture running on the PC with the capture card. Several people can \
+             watch; one at a time controls the MiSTer.",
+        )
+        .build();
+    video.add(&pick);
+    video.add(&stream);
+    video.add(&quality);
+
     let mister_host = adw::EntryRow::builder().title("MiSTer IP or hostname").text(profile.mister_host.as_str()).build();
     let port = adw::SpinRow::with_range(1.0, 65535.0, 1.0);
     port.set_title("mrext port");
     port.set_value(profile.mister_port as f64);
-    let mister = adw::PreferencesGroup::builder().title("MiSTer").description("Keyboard and mouse, through mrext Remote").build();
-    mister.add(&mister_host);
-    mister.add(&port);
-
-    let obs_host = adw::EntryRow::builder().title("OBS PC (optional)").text(profile.obs_host.as_str()).build();
-    let ndi_source = adw::EntryRow::builder().title("NDI source").text(profile.ndi_source.as_str()).build();
-    let found = gtk::StringList::new(&[]);
-    let pick = gtk::DropDown::builder().model(&found).valign(gtk::Align::Center).build();
-    pick.set_tooltip_text(Some("Sources found on the network and on the OBS PC above"));
-    pick.set_visible(false);
-    let find = gtk::Button::builder().label("Find").valign(gtk::Align::Center).build();
-    let spinner = gtk::Spinner::builder().spinning(true).build();
-    spinner.set_visible(false);
-    ndi_source.add_suffix(&spinner);
-    ndi_source.add_suffix(&pick);
-    ndi_source.add_suffix(&find);
-    let video = adw::PreferencesGroup::builder()
-        .title("Video and audio")
+    let mister = adw::PreferencesGroup::builder()
+        .title("MiSTer")
         .description(
-            "From OBS over NDI®. Enter the OBS PC to list its sources directly; otherwise sources found on the \
-             local network are listed. NDI discovery needs avahi-daemon running. See ndi.video.",
+            "Optional: keyboard and mouse go through the capture server, which knows its MiSTer. Without a stream, \
+             the one showing this MiSTer is used.",
         )
         .build();
-    video.add(&obs_host);
-    video.add(&ndi_source);
+    mister.add(&mister_host);
+    mister.add(&port);
 
     let sensitivity = adw::SpinRow::with_range(0.1, 4.0, 0.05);
     sensitivity.set_title("Mouse sensitivity");
@@ -58,8 +82,8 @@ pub fn show(parent: &impl IsA<gtk::Widget>, profile: HostProfile, is_new: bool, 
     let general = adw::PreferencesGroup::new();
     general.add(&name);
     page.add(&general);
-    page.add(&mister);
     page.add(&video);
+    page.add(&mister);
     page.add(&mouse);
 
     let cancel = gtk::Button::with_label("Cancel");
@@ -81,63 +105,114 @@ pub fn show(parent: &impl IsA<gtk::Widget>, profile: HostProfile, is_new: bool, 
         .child(&view)
         .build();
 
-    // NDI discovery blocks for a couple of seconds: run it on a thread; a
-    // search that finishes after a newer one started is ignored.
+    // Set while the code itself changes the picker or the address, so their
+    // handlers don't answer each other (or a refilled list's auto-selection).
+    let syncing = Rc::new(Cell::new(false));
+    // The picker shows the found stream the address is, if any.
+    let sync_pick: Rc<dyn Fn()> = {
+        let (pick, stream, streams, syncing) = (pick.clone(), stream.clone(), streams.clone(), syncing.clone());
+        Rc::new(move || {
+            let text = stream.text();
+            let at = streams.borrow().iter().position(|f| f.address == text.trim());
+            syncing.set(true);
+            pick.set_selected(at.map_or(gtk::INVALID_LIST_POSITION, |i| i as u32));
+            syncing.set(false);
+        })
+    };
+    {
+        let (sync_pick, syncing) = (sync_pick.clone(), syncing.clone());
+        stream.connect_changed(move |_| {
+            if !syncing.get() {
+                sync_pick();
+            }
+        });
+    }
+    {
+        let (stream, mister_host, streams, syncing) = (stream.clone(), mister_host.clone(), streams.clone(), syncing.clone());
+        pick.connect_selected_notify(move |pick| {
+            if syncing.get() {
+                return;
+            }
+            let Some(f) = streams.borrow().get(pick.selected() as usize).cloned() else { return };
+            syncing.set(true);
+            stream.set_text(&f.address);
+            syncing.set(false);
+            // The stream knows its MiSTer.
+            if !f.mister.is_empty() {
+                mister_host.set_text(&f.mister);
+            }
+        });
+    }
+
+    // Stream discovery (mDNS) blocks for a couple of seconds: run it on a
+    // thread; a search that finishes after a newer one started is ignored.
     let search_id = Rc::new(Cell::new(0u32));
     let search = {
-        let (obs_host, ndi_source, found, pick, find, spinner, search_id) =
-            (obs_host.clone(), ndi_source.clone(), found.clone(), pick.clone(), find.clone(), spinner.clone(), search_id.clone());
+        let (stream, found, streams, pick, find, spinner, search_id, syncing, sync_pick) = (
+            stream.clone(),
+            found.clone(),
+            streams.clone(),
+            pick.clone(),
+            find.clone(),
+            spinner.clone(),
+            search_id.clone(),
+            syncing.clone(),
+            sync_pick.clone(),
+        );
         move || {
             let id = search_id.get() + 1;
             search_id.set(id);
-            let hosts = obs_host.text().trim().to_string();
             spinner.set_visible(true);
             find.set_sensitive(false);
+            pick.set_subtitle("Looking for streams…");
             let (tx, rx) = std::sync::mpsc::channel();
             std::thread::spawn(move || {
-                let _ = tx.send(kvms_core::video::ndi_find_sources(hosts, 2000).map_err(|e| e.to_string()));
+                let _ = tx.send(kvms_core::discover::find_streams(2500));
             });
-            let (ndi_source, found, pick, find, spinner, search_id) =
-                (ndi_source.clone(), found.clone(), pick.clone(), find.clone(), spinner.clone(), search_id.clone());
+            let (stream, found, streams, pick, find, spinner, search_id, syncing, sync_pick) = (
+                stream.clone(),
+                found.clone(),
+                streams.clone(),
+                pick.clone(),
+                find.clone(),
+                spinner.clone(),
+                search_id.clone(),
+                syncing.clone(),
+                sync_pick.clone(),
+            );
             glib::timeout_add_local(std::time::Duration::from_millis(100), move || {
-                let Ok(result) = rx.try_recv() else { return glib::ControlFlow::Continue };
+                let Ok(list) = rx.try_recv() else { return glib::ControlFlow::Continue };
                 if id != search_id.get() {
                     return glib::ControlFlow::Break;
                 }
                 spinner.set_visible(false);
                 find.set_sensitive(true);
-                let names = result.unwrap_or_else(|e| {
-                    kvms_core::log(&format!("ndi: {e}"));
-                    Vec::new()
+                let labels: Vec<String> = list
+                    .iter()
+                    .map(|f| if f.mister.is_empty() { f.name.clone() } else { format!("{} ({})", f.name, f.mister) })
+                    .collect();
+                let count = list.len();
+                *streams.borrow_mut() = list;
+                syncing.set(true);
+                found.splice(0, found.n_items(), &labels.iter().map(String::as_str).collect::<Vec<_>>());
+                syncing.set(false);
+                pick.set_subtitle(&match count {
+                    0 => "No streams found. Is MiSTerKVMS Capture running on the capture PC, with a stream set up? \
+                          You can also type its address."
+                        .to_string(),
+                    1 => "Found 1 stream.".to_string(),
+                    n => format!("Found {n} streams."),
                 });
-                found.splice(0, found.n_items(), &names.iter().map(String::as_str).collect::<Vec<_>>());
-                pick.set_visible(!names.is_empty());
-                if ndi_source.text().is_empty() && names.len() == 1 {
-                    ndi_source.set_text(&names[0]);
+                sync_pick();
+                if stream.text().trim().is_empty() && count == 1 {
+                    pick.set_selected(0);
                 }
                 glib::ControlFlow::Break
             });
         }
     };
-    let search = Rc::new(search);
-    {
-        let search = search.clone();
-        find.connect_clicked(move |_| search());
-    }
-    {
-        let search = search.clone();
-        obs_host.connect_apply(move |_| search());
-    }
-    obs_host.set_show_apply_button(true);
-    {
-        let ndi_source = ndi_source.clone();
-        pick.connect_selected_item_notify(move |pick| {
-            if let Some(item) = pick.selected_item().and_then(|i| i.downcast::<gtk::StringObject>().ok()) {
-                ndi_source.set_text(&item.string());
-            }
-        });
-    }
-    search();
+    find.connect_clicked(move |_| search());
+    find.emit_clicked();
 
     {
         let save = save.clone();
@@ -154,10 +229,11 @@ pub fn show(parent: &impl IsA<gtk::Widget>, profile: HostProfile, is_new: bool, 
         save.connect_clicked(move |_| {
             let mut p = profile.clone();
             p.name = name.text().trim().to_string();
+            p.source = "capture".into();
+            p.stream = stream.text().trim().to_string();
+            p.quality = QUALITIES.get(quality.selected() as usize).map_or("auto", |(value, _)| value).to_string();
             p.mister_host = mister_host.text().trim().to_string();
             p.mister_port = port.value() as u16;
-            p.obs_host = obs_host.text().trim().to_string();
-            p.ndi_source = ndi_source.text().trim().to_string();
             p.mouse_sensitivity = (sensitivity.value() * 100.0).round() / 100.0;
             p.alt_click_is_middle = alt_click.is_active();
             p.raw_mouse = raw_mouse.is_active();

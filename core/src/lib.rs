@@ -8,7 +8,6 @@ pub mod discover;
 pub mod input;
 pub mod keymap;
 pub mod link;
-pub mod ndi;
 pub mod profiles;
 pub mod session;
 pub mod text;

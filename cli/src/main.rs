@@ -33,24 +33,27 @@ struct Cli {
     /// MiSTer address (overrides the settings file).
     #[arg(long, global = true)]
     mister: Option<String>,
-    /// NDI source name, e.g. "OBSPC (MiSTer-1)" (overrides the settings file).
+    /// Video from a capture server stream, mkvm://host/stream (overrides
+    /// the settings file).
     #[arg(long, global = true)]
-    ndi: Option<String>,
+    stream: Option<String>,
+    /// Video from a capture card on this computer, id or name (test:pattern
+    /// works; overrides the settings file).
+    #[arg(long, global = true)]
+    local: Option<String>,
+    /// Audio for --local, id or name (default: the card's own).
+    #[arg(long, global = true)]
+    local_audio: Option<String>,
     #[command(subcommand)]
     cmd: Cmd,
 }
 
 #[derive(Subcommand)]
 enum Cmd {
-    /// What's running on the MiSTer, and whether its NDI video is reachable.
+    /// What's running on the MiSTer, and whether its video is reachable.
     Status,
     /// List the named machines in the settings file.
     Machines,
-    /// List NDI sources on the network.
-    Sources {
-        #[arg(long, default_value = "2s")]
-        wait: String,
-    },
     /// Save the current picture as PNG.
     Screenshot {
         out: PathBuf,
@@ -62,24 +65,15 @@ enum Cmd {
         #[arg(long)]
         full: bool,
     },
-    /// Record for a duration: .wav = audio only, .mp4 = video + audio (needs ffmpeg).
-    /// From a capture server stream (--stream) or a card on this computer
-    /// (--local): .mp4, with the apps' recorder.
+    /// Record for a duration: .mp4 = video + audio with the apps' recorder;
+    /// .mov/.mkv likewise through ffmpeg directly; .wav = audio only. Needs ffmpeg.
     Record {
         /// e.g. 10s, 500ms, 2m
         duration: String,
         out: PathBuf,
+        /// Keep MiSTer's black borders.
         #[arg(long)]
         full: bool,
-        /// Capture server stream (mkvm://host/stream).
-        #[arg(long)]
-        stream: Option<String>,
-        /// Capture card on this computer (id or name; test:pattern works).
-        #[arg(long)]
-        local: Option<String>,
-        /// Audio for --local (id or name); default: the card's own.
-        #[arg(long)]
-        local_audio: Option<String>,
     },
     /// Save each changed frame as PNG for a duration (to check animation/timing).
     Frames {
@@ -144,19 +138,10 @@ enum Cmd {
         wait: String,
     },
     /// Run a full app session (offscreen) and watch memory; fails if it keeps
-    /// growing. One source: --stream, --local or --ndi.
+    /// growing. Video from --stream or --local (or the settings file).
     Soak {
         /// e.g. 10m, 8h
         duration: String,
-        /// Capture server stream (mkvm://host/stream).
-        #[arg(long)]
-        stream: Option<String>,
-        /// Capture card on this computer (id or name; test:pattern works).
-        #[arg(long)]
-        local: Option<String>,
-        /// NDI source name.
-        #[arg(long)]
-        ndi: Option<String>,
         #[arg(long, default_value = "10s")]
         every: String,
         /// Allowed growth after warm-up, MB.
@@ -223,8 +208,13 @@ fn run(cli: Cli) -> Result<Value, String> {
     if let Some(m) = cli.mister {
         s.mister_host = m;
     }
-    if let Some(n) = cli.ndi {
-        s.ndi_source = n;
+    // Either source on the command line replaces the settings file's.
+    if cli.stream.is_some() || cli.local.is_some() {
+        s.stream = cli.stream.unwrap_or_default();
+        s.local = cli.local.unwrap_or_default();
+    }
+    if let Some(a) = cli.local_audio {
+        s.local_audio = a;
     }
     match cli.cmd {
         Cmd::Stream { address, duration: d, max, save } => {
@@ -241,56 +231,39 @@ fn run(cli: Cli) -> Result<Value, String> {
             let found = kvms_core::discover::find_streams(duration(&wait)?.as_millis() as u32);
             Ok(json!({ "streams": found }))
         }
-        Cmd::Soak { duration: d, stream, local, ndi, every, limit_mb } => {
-            let source = soak::SoakSource { stream, local, local_audio: None, ndi };
-            soak::soak(source, duration(&d)?, duration(&every)?, limit_mb)
-        }
+        Cmd::Soak { duration: d, every, limit_mb } => soak::soak(video_source(&s)?, duration(&d)?, duration(&every)?, limit_mb),
         Cmd::Status => status(&s),
         Cmd::Machines => Ok(json!({
             "default": s.default,
             "machines": s.machines.iter().map(|(name, m)| json!({
                 "name": name,
                 "mister_host": m.mister_host,
-                "ndi_source": m.ndi_source,
+                "stream": m.stream,
+                "local": m.local,
             })).collect::<Vec<_>>(),
             "settings": s.file,
         })),
-        Cmd::Sources { wait } => {
-            let ndi = kvms_core::ndi::ndi()?;
-            let wait = duration(&wait)?.as_millis() as u32;
-            let sources = kvms_core::ndi::find_sources(ndi, &s.obs_host, wait);
-            // Where each source says it can be reached ("ip:port"): a source
-            // advertised on an address this computer can't route to (a VM or
-            // VPN adapter on the OBS PC) is found but never delivers video.
-            let mut addresses = serde_json::Map::new();
-            for f in kvms_core::ndi::find(ndi, &s.obs_host, wait, None) {
-                addresses.insert(f.name, json!(f.url));
-            }
-            Ok(json!({ "sources": sources, "addresses": addresses }))
-        }
         Cmd::Screenshot { out, native, full } => {
             if native {
                 native_screenshot(&s, &out)
             } else {
-                let src = Source::open(&s.ndi()?, &s.obs_host)?;
+                let src = Source::open(video_source(&s)?)?;
                 let f = src.fresh_frame(Duration::from_secs(5))?;
                 let area = f.area(full);
                 f.save_png(&out, area)?;
                 Ok(json!({ "path": out, "source": "capture", "width": area.w, "height": area.h }))
             }
         }
-        Cmd::Record { duration: d, out, full, stream, local, local_audio } if stream.is_some() || local.is_some() => {
-            if !out.extension().is_some_and(|e| e.eq_ignore_ascii_case("mp4")) {
-                return Err("recording a stream or local card makes an .mp4".into());
-            }
-            let session = session::open(session::SessionSource { stream, local, local_audio, ndi: None }, !full)?;
+        Cmd::Record { duration: d, out, full } if out.extension().is_some_and(|e| e.eq_ignore_ascii_case("mp4")) => {
+            // The apps' recorder: what Record in the apps makes.
+            let session = session::open(video_source(&s)?, !full)?;
             session.wait_connected(Duration::from_secs(15))?;
             let path = session.record(duration(&d)?, &out)?;
             let st = session.core.state();
             Ok(json!({ "path": path, "video": st.video_stats }))
         }
-        Cmd::Record { duration: d, out, full, .. } => {
-            let src = Source::open(&s.ndi()?, &s.obs_host)?;
+        Cmd::Record { duration: d, out, full } => {
+            let src = Source::open(video_source(&s)?)?;
             let r = media::record(&src, duration(&d)?, &out, full)?;
             Ok(json!({
                 "path": out, "frames": r.frames, "fps": r.fps,
@@ -436,6 +409,26 @@ fn mouse(session: &MisterSession, action: MouseCmd) -> Result<Value, String> {
 
 // MARK: - commands
 
+/// Where video comes from: `stream`, else `local`, else the capture server
+/// stream that shows `mister_host` (found on the network, like the apps do).
+fn video_source(s: &Settings) -> Result<session::SessionSource, String> {
+    let audio = (!s.local_audio.is_empty()).then(|| s.local_audio.clone());
+    if !s.stream.is_empty() {
+        return Ok(session::SessionSource { stream: Some(s.stream.clone()), ..Default::default() });
+    }
+    if !s.local.is_empty() {
+        return Ok(session::SessionSource { local: Some(s.local.clone()), local_audio: audio, ..Default::default() });
+    }
+    if s.mister_host.is_empty() {
+        return Err(settings::missing("stream", "--stream or --local"));
+    }
+    let host = s.mister_host.trim().to_lowercase();
+    match kvms_core::discover::find_streams(2500).into_iter().find(|f| f.mister.trim().to_lowercase() == host) {
+        Some(f) => Ok(session::SessionSource { stream: Some(f.address), ..Default::default() }),
+        None => Err(format!("no capture stream shows {}: pass --stream or --local, or set one in local.settings.json", s.mister_host)),
+    }
+}
+
 fn status(s: &Settings) -> Result<Value, String> {
     let mister = match connect(s) {
         Ok((session, status)) => {
@@ -452,17 +445,23 @@ fn status(s: &Settings) -> Result<Value, String> {
         }
         Err(e) => json!({ "host": s.mister_host, "connected": false, "error": e }),
     };
-    let ndi = match kvms_core::ndi::ndi() {
-        Ok(lib) => {
-            let sources = kvms_core::ndi::find_sources(lib, &s.obs_host, 1500);
-            json!({
-                "runtime": lib.version, "source": s.ndi_source,
-                "found": sources.iter().any(|x| *x == s.ndi_source), "sources": sources,
-            })
+    let video = match video_source(s) {
+        Ok(session::SessionSource { stream: Some(stream), .. }) => {
+            // Is the stream announced on the network? (Compared by name: an
+            // address typed by hand can name the server differently.)
+            let name = stream.rsplit('/').next().unwrap_or_default().to_string();
+            let found = kvms_core::discover::find_streams(1500);
+            json!({ "stream": stream, "found": found.iter().any(|f| f.name.eq_ignore_ascii_case(&name)), "streams": found })
         }
+        Ok(session::SessionSource { local: Some(card), local_audio, .. }) => {
+            let cards = kvms_capture::devices().unwrap_or_default();
+            let found = cards.iter().any(|d| d.id == card || d.name.eq_ignore_ascii_case(&card));
+            json!({ "local": card, "audio": local_audio, "found": found, "cards": cards.iter().map(|d| &d.name).collect::<Vec<_>>() })
+        }
+        Ok(_) => json!({}),
         Err(e) => json!({ "error": e }),
     };
-    Ok(json!({ "machine": s.machine, "mister": mister, "ndi": ndi, "settings": s.file }))
+    Ok(json!({ "machine": s.machine, "mister": mister, "video": video, "settings": s.file }))
 }
 
 #[derive(serde::Deserialize)]
@@ -512,7 +511,7 @@ fn encode(segment: &str) -> String {
 
 fn frames(s: &Settings, d: Duration, dir: &Path, all: bool, full: bool) -> Result<Value, String> {
     std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-    let src = Source::open(&s.ndi()?, &s.obs_host)?;
+    let src = Source::open(video_source(s)?)?;
     let first = src.fresh_frame(Duration::from_secs(5))?;
     let area = first.area(full);
     let start = Instant::now();
@@ -538,7 +537,7 @@ fn frames(s: &Settings, d: Duration, dir: &Path, all: bool, full: bool) -> Resul
 }
 
 fn wait_for_change(s: &Settings, timeout: Duration, still: Option<Duration>, min: usize, full: bool) -> Result<Value, String> {
-    let src = Source::open(&s.ndi()?, &s.obs_host)?;
+    let src = Source::open(video_source(s)?)?;
     let mut prev = src.fresh_frame(Duration::from_secs(5))?;
     let area = prev.area(full);
     let start = Instant::now();

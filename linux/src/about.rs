@@ -21,16 +21,7 @@ pub fn show(parent: &impl IsA<gtk::Widget>) {
         &[
             "MiSTer FPGA by Sorgelig and contributors https://github.com/MiSTer-devel/Main_MiSTer/wiki",
             "mrext Remote by wizzo and contributors https://github.com/wizzomafizzo/mrext",
-            "OBS Studio https://obsproject.com",
-            "DistroAV https://github.com/DistroAV/DistroAV",
-            "NDI® https://ndi.video",
         ],
-    );
-    about.add_legal_section(
-        "NDI®",
-        None,
-        gtk::License::Custom,
-        Some("NDI® is a registered trademark of Vizrt NDI AB. See <a href=\"https://ndi.video\">ndi.video</a>."),
     );
     about.present(Some(parent));
 }

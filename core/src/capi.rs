@@ -112,15 +112,6 @@ fn call(c: &Arc<Controller>, r: Value) -> Result<Value, String> {
     let done = Ok(Value::Null);
     match cmd.as_str() {
         "version" => Ok(json!(env!("CARGO_PKG_VERSION"))),
-        "ndiRuntimeInfo" => Ok(json!(crate::video::ndi_runtime_info())),
-        // Blocks up to waitMs: call it off the UI thread.
-        "findSources" => {
-            let hosts: Option<String> = arg(&r, "obsHosts")?;
-            let wait: Option<u32> = arg(&r, "waitMs")?;
-            crate::video::ndi_find_sources(hosts.unwrap_or_default(), wait.unwrap_or(2000))
-                .map(|s| json!(s))
-                .map_err(|e| e.to_string())
-        }
         "ffmpegAvailable" => Ok(json!(crate::video::ffmpeg::ffmpeg_available())),
         // Capture server streams on the network; blocks up to waitMs.
         "findStreams" => {

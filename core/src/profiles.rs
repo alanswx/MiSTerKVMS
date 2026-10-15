@@ -22,10 +22,10 @@ use crate::video::{DisplaySettings, ScaleMode};
 pub struct HostProfile {
     pub id: String,
     pub name: String,
-    /// Where video comes from: "capture" (a capture server stream), "local"
-    /// (a capture card on this computer) or "ndi" (legacy). Empty: decided
-    /// by which of `stream`, `local_video` and `ndi_source` is set (hosts
-    /// saved before sources existed, and shells that don't set it).
+    /// Where video comes from: "capture" (a capture server stream) or
+    /// "local" (a capture card on this computer). Empty: "local" if
+    /// `local_video` is set, else "capture". Hosts saved with "ndi" (removed)
+    /// are capture hosts; opening one finds its MiSTer's stream.
     pub source: String,
     /// Capture server stream, `mkvm://host/stream`.
     pub stream: String,
@@ -39,10 +39,6 @@ pub struct HostProfile {
     /// the server talks to the MiSTer.
     pub mister_host: String,
     pub mister_port: u16,
-    /// OBS PC sending NDI (optional: NDI discovery usually finds it by name).
-    pub obs_host: String,
-    /// NDI source name as discovered, e.g. "OBSPC (MiSTer-1)".
-    pub ndi_source: String,
     pub mouse_sensitivity: f64,
     /// Alt + click → middle click.
     pub alt_click_is_middle: bool,
@@ -71,8 +67,6 @@ impl Default for HostProfile {
             quality: "auto".into(),
             mister_host: String::new(),
             mister_port: crate::default_mrext_port(),
-            obs_host: String::new(),
-            ndi_source: String::new(),
             mouse_sensitivity: 1.0,
             alt_click_is_middle: true,
             raw_mouse: false,
@@ -91,7 +85,6 @@ impl Default for HostProfile {
 pub enum SourceKind {
     Capture,
     Local,
-    Ndi,
 }
 
 impl HostProfile {
@@ -99,10 +92,10 @@ impl HostProfile {
         match self.source.as_str() {
             "capture" => SourceKind::Capture,
             "local" => SourceKind::Local,
-            "ndi" => SourceKind::Ndi,
+            // Including "ndi" (removed): the MiSTer's stream replaces it.
             _ if !self.stream.trim().is_empty() => SourceKind::Capture,
             _ if !self.local_video.is_empty() => SourceKind::Local,
-            _ => SourceKind::Ndi,
+            _ => SourceKind::Capture,
         }
     }
 

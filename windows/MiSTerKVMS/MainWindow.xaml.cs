@@ -46,7 +46,6 @@ public sealed partial class MainWindow : Window
         Closed += OnClosed;
         AddAccelerators();
 
-        Log.Write($"NDI: {_core.Call<string>("ndiRuntimeInfo")}");
         Log.Write($"settings: {_core.Call<string>("settingsPath")}");
         LoadProfiles();
         Render();
@@ -156,7 +155,9 @@ public sealed partial class MainWindow : Window
         if (profile.SourceKind == "capture")
         {
             PlaceholderTitle.Text = profile.StreamName.Length > 0 ? profile.StreamName : "No stream chosen";
-            PlaceholderDetail.Text = profile.StreamName.Length == 0 ? "Edit the host and choose a MiSTerKVMS Capture stream."
+            // Without a stream the core looks for the MiSTer's one and says so.
+            PlaceholderDetail.Text = profile.StreamName.Length == 0
+                ? s.Connection.Reason ?? "Edit the host and choose a MiSTerKVMS Capture stream."
                 : s.Stream is { Connected: false } st && st.Error.Length > 0 ? st.Error
                 : s.VideoStats?.State switch
                 {
@@ -166,45 +167,14 @@ public sealed partial class MainWindow : Window
                 };
             return;
         }
-        if (profile.SourceKind == "local")
+        PlaceholderTitle.Text = "Capture card on this PC";
+        PlaceholderDetail.Text = s.VideoError ?? s.VideoStats?.State switch
         {
-            PlaceholderTitle.Text = "Capture card on this PC";
-            PlaceholderDetail.Text = s.VideoError ?? s.VideoStats?.State switch
-            {
-                null or "opening" or "connecting" => "Opening the capture card…",
-                "no video" => "The capture card has no picture. Is the MiSTer on?",
-                var other => other,
-            };
-            return;
-        }
-        if (profile.NdiSource.Length == 0)
-        {
-            PlaceholderTitle.Text = "No NDI source set";
-            PlaceholderDetail.Text = "Edit the host and choose the OBS NDI source for this MiSTer.";
-        }
-        else if (s.VideoError != null)
-        {
-            PlaceholderTitle.Text = "Video unavailable";
-            PlaceholderDetail.Text = s.VideoError;
-        }
-        else
-        {
-            PlaceholderTitle.Text = profile.NdiSource;
-            PlaceholderDetail.Text = s.VideoStats?.State switch
-            {
-                null or "searching" => "Looking for the NDI source…",
-                "no video" => "Connected, waiting for video",
-                "not found" => NotFoundText(s.VideoStats.AvailableSources),
-                var other => other,
-            };
-        }
+            null or "opening" or "connecting" => "Opening the capture card…",
+            "no video" => "The capture card has no picture. Is the MiSTer on?",
+            var other => other,
+        };
     }
-
-    /// <summary>The saved NDI source isn't on the network (and no renamed
-    /// copy of it was found to switch to).</summary>
-    private static string NotFoundText(List<string> seen) => seen.Count == 0
-        ? "Not found, and no NDI sources are visible. Is OBS running with its NDI output on?"
-        : $"Not found on the network. Visible sources: {string.Join(", ", seen)}. Edit the host to choose one.";
 
     /// <summary>Capture server streams: who controls the MiSTer.</summary>
     private void RenderControl(ControllerState s)
@@ -278,7 +248,7 @@ public sealed partial class MainWindow : Window
             lines.Add($"src    {v.SourceWidth}×{v.SourceHeight}");
             lines.Add($"crop   {v.CropWidth}×{v.CropHeight}");
             lines.Add(string.Format(c, "fps    {0:F1} in / {1:F1} drawn", v.ReceivedFps, v.RenderedFps));
-            lines.Add(OpenProfile?.SourceKind == "ndi" ? $"drop   {v.DroppedFrames} ndi / {v.SkippedFrames} skipped" : $"drop   {v.SkippedFrames} skipped");
+            lines.Add($"drop   {v.DroppedFrames} dropped / {v.SkippedFrames} skipped");
             lines.Add($"age    {AgeText(v.FrameAgeMs)}");
             lines.Add(string.Format(c, "audio  {0:F0} ms buf · {1} underruns", v.AudioBufferMs, v.AudioUnderruns));
             if (s.Display.PredictiveCursor)
@@ -294,13 +264,13 @@ public sealed partial class MainWindow : Window
         StatsText.Text = string.Join("\n", lines);
     }
 
-    /// <summary>NDI frame age needs the OBS PC's and this PC's clocks to
-    /// agree; over a second almost always means they don't.</summary>
-    private string AgeText(double ms) => ms switch
+    /// <summary>Capture-to-screen frame age (clock-corrected for streams);
+    /// over a second almost always means the clocks couldn't be matched.</summary>
+    private static string AgeText(double ms) => ms switch
     {
         < 0 => "n/a",
         > 1000 => string.Format(CultureInfo.InvariantCulture, "clocks differ (~{0:F1} s)", ms / 1000),
-        _ => string.Format(CultureInfo.InvariantCulture, "≈{0:F0} ms {1}→screen", ms, OpenProfile?.SourceKind == "ndi" ? "OBS" : "capture"),
+        _ => string.Format(CultureInfo.InvariantCulture, "≈{0:F0} ms capture→screen", ms),
     };
 
     private void RenderStatusBar(ControllerState s)

@@ -6,7 +6,7 @@ struct ProfileEditor: View {
     @State var profile: HostProfile
     let onSave: (HostProfile) -> Void
     private let original: HostProfile
-    /// "capture", "local" or "ndi".
+    /// "capture" or "local".
     @State private var source: String
     // Capture server streams
     @State private var streams: [FoundStream] = []
@@ -16,19 +16,12 @@ struct ProfileEditor: View {
     @State private var cards: [CaptureCard] = []
     @State private var audioInputs: [AudioInput] = []
     @State private var searchingCards = false
-    // OBS via NDI
-    @State private var found: [String] = []
-    @State private var searching = false
-    @State private var findError: String?
-    @State private var debounce: Task<Void, Never>?
-    /// Ignores results from an older search that finishes after a newer one.
-    @State private var searchID = 0
 
     init(profile: HostProfile, onSave: @escaping (HostProfile) -> Void) {
         _profile = State(initialValue: profile)
         self.onSave = onSave
         original = profile
-        let isNew = profile.misterHost.isEmpty && profile.ndiSource.isEmpty && profile.stream.isEmpty && profile.localVideo.isEmpty
+        let isNew = profile.misterHost.isEmpty && profile.stream.isEmpty && profile.localVideo.isEmpty
         // New hosts start on the capture server; old ones keep what they use.
         _source = State(initialValue: isNew ? "capture" : profile.sourceKind)
     }
@@ -75,36 +68,8 @@ struct ProfileEditor: View {
 
     private func showSource() {
         switch source {
-        case "capture": if streams.isEmpty { findStreams() }
         case "local": if cards.isEmpty { findCards() }
-        default: findSources()
-        }
-    }
-
-    /// Look for NDI sources (on the network and on the OBS PC, if given).
-    /// NDI discovery blocks for a couple of seconds, so it runs off the main thread.
-    private func findSources() {
-        searchID += 1
-        let id = searchID
-        let hosts = profile.obsHost
-        searching = true
-        findError = nil
-        Task.detached {
-            let result = Result { try ndiFindSources(obsHosts: hosts, waitMs: 2000) }
-            await MainActor.run {
-                guard id == searchID else { return }
-                searching = false
-                switch result {
-                case .success(let names):
-                    found = names
-                    if profile.ndiSource.isEmpty, names.count == 1 {
-                        profile.ndiSource = names[0]
-                    }
-                case .failure(let error):
-                    found = []
-                    findError = "\(error)"
-                }
-            }
+        default: if streams.isEmpty { findStreams() }
         }
     }
 
@@ -117,7 +82,6 @@ struct ProfileEditor: View {
                 Picker("Video & audio from", selection: $source) {
                     Text("MiSTerKVMS Capture (a stream on the network)").tag("capture")
                     Text("A capture card on this Mac").tag("local")
-                    Text("OBS via NDI (older setups)").tag("ndi")
                 }
             } header: {
                 Text("Video & audio")
@@ -128,11 +92,10 @@ struct ProfileEditor: View {
                 }
             }
             switch source {
-            case "capture": streamSection
             case "local": cardSection
-            default: ndiSection
+            default: streamSection
             }
-            if source != "capture" {
+            if source == "local" {
                 Section("MiSTer (keyboard & mouse via mrext Remote)") {
                     TextField("MiSTer IP or hostname", text: $profile.misterHost, prompt: Text("192.168.1.50"))
                     TextField("mrext port", value: $profile.misterPort, format: .number.grouping(.never))
@@ -165,14 +128,6 @@ struct ProfileEditor: View {
         .frame(width: 500)
         .onAppear(perform: showSource)
         .onChange(of: source) { _, _ in showSource() }
-        .onChange(of: profile.obsHost) { _, _ in
-            // Search again once typing pauses.
-            debounce?.cancel()
-            debounce = Task {
-                try? await Task.sleep(for: .milliseconds(800))
-                if !Task.isCancelled { findSources() }
-            }
-        }
         .toolbar {
             ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
             ToolbarItem(placement: .confirmationAction) {
@@ -285,55 +240,6 @@ extension ProfileEditor {
         } footer: {
             Text("Only one program can use a capture card at a time: close OBS or MiSTerKVMS Capture if they have it open. macOS asks once for Camera and Microphone access.")
                 .font(.caption)
-        }
-    }
-
-    @ViewBuilder fileprivate var ndiSection: some View {
-        Section {
-            TextField("OBS PC", text: $profile.obsHost, prompt: Text("IP or name, e.g. obs-pc.local (optional)"))
-                .onSubmit(findSources)
-            LabeledContent("NDI source") {
-                HStack(spacing: 6) {
-                    TextField("NDI source", text: $profile.ndiSource, prompt: Text("Choose or type"))
-                        .labelsHidden()
-                    Menu {
-                        if found.isEmpty {
-                            Text(searching ? "Searching…" : "No sources found")
-                        }
-                        ForEach(found, id: \.self) { name in
-                            Button(name) { profile.ndiSource = name }
-                        }
-                    } label: {
-                        Image(systemName: "chevron.up.chevron.down")
-                    }
-                    .menuStyle(.borderlessButton)
-                    .menuIndicator(.hidden)
-                    .fixedSize()
-                    .help("Sources found on the network and on the OBS PC above")
-                    Button(action: findSources) {
-                        if searching {
-                            ProgressView().controlSize(.small)
-                        } else {
-                            Text("Find")
-                        }
-                    }
-                    .disabled(searching)
-                }
-            }
-            if let findError {
-                Text(findError).font(.caption).foregroundStyle(.red)
-            } else if !searching, !found.isEmpty {
-                Text("Found: \(found.joined(separator: ", "))")
-                    .font(.caption).foregroundStyle(.secondary)
-            }
-        } header: {
-            Text("Video & audio (OBS via NDI)")
-        } footer: {
-            HStack(spacing: 4) {
-                Text("Enter the OBS PC to list its sources directly; otherwise sources found on the local network are listed. Video uses NDI®.")
-                Link("ndi.video", destination: URL(string: "https://ndi.video")!)
-            }
-            .font(.caption)
         }
     }
 }

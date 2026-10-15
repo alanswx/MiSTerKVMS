@@ -125,7 +125,6 @@ impl Ui {
         });
         let core = Controller::new(Arc::new(Observer));
         core.set_frame_output(Some(frames.clone()));
-        kvms_core::log(&format!("NDI: {}", kvms_core::video::ndi_runtime_info()));
         kvms_core::log(&format!("settings: {}", core.settings_path()));
 
         // Sidebar: hosts.
@@ -144,7 +143,7 @@ impl Ui {
         let empty = adw::StatusPage::builder()
             .icon_name("video-display-symbolic")
             .title("No Hosts")
-            .description("Add a MiSTer and the NDI source that carries its video.")
+            .description("Add a MiSTer and the capture server stream that carries its video.")
             .child(&add_first)
             .build();
         empty.add_css_class("compact");
@@ -761,18 +760,22 @@ impl Ui {
         let (title, detail) = match profile {
             None if self.profiles.borrow().is_empty() => ("Add a host to get started".to_string(), String::new()),
             None => ("Select a Host".to_string(), "Choose a MiSTer in the sidebar to connect.".to_string()),
-            Some(p) if p.ndi_source.is_empty() => (
-                "No NDI source set".to_string(),
-                "Edit the host and choose the OBS NDI source for this MiSTer.".to_string(),
+            // No stream yet: the core says why (none chosen, or still
+            // looking for the one that shows this MiSTer).
+            Some(p) if p.stream.trim().is_empty() => (
+                "No capture stream set".to_string(),
+                match &s.connection {
+                    ConnectionState::Disconnected { reason } if reason != "no capture stream chosen" => sentence(reason),
+                    _ => "Edit the host and choose the capture server stream for this MiSTer.".to_string(),
+                },
             ),
             Some(_) if s.video_error.is_some() => ("Video unavailable".to_string(), s.video_error.clone().unwrap_or_default()),
             Some(p) => (
-                p.ndi_source.clone(),
+                p.stream.trim().to_string(),
                 match s.video_stats.as_ref().map(|v| v.state.as_str()) {
-                    None | Some("searching") => "Looking for the NDI source…".to_string(),
+                    None | Some("searching") | Some("connecting") | Some("opening") => "Connecting to the capture stream…".to_string(),
                     Some("no video") => "Connected, waiting for video".to_string(),
-                    Some("not found") => not_found_text(s.video_stats.as_ref().map_or(&[][..], |v| &v.available_sources)),
-                    Some(other) => other.to_string(),
+                    Some(other) => sentence(other),
                 },
             ),
         };
@@ -800,7 +803,7 @@ impl Ui {
                 lines.push(format!("src    {}×{}", v.source_width, v.source_height));
                 lines.push(format!("crop   {}×{}", v.crop_width, v.crop_height));
                 lines.push(format!("fps    {:.1} in / {:.1} drawn", v.received_fps, v.rendered_fps));
-                lines.push(format!("drop   {} ndi / {} skipped", v.dropped_frames, v.skipped_frames));
+                lines.push(format!("drop   {} source / {} skipped", v.dropped_frames, v.skipped_frames));
                 lines.push(format!("age    {}", age_text(v.frame_age_ms)));
                 lines.push(format!("audio  {:.0} ms buf · {} underruns", v.audio_buffer_ms, v.audio_underruns));
                 if s.display.predictive_cursor {
@@ -1023,24 +1026,20 @@ fn key(keycode: u32, down: bool) -> glib::Propagation {
     glib::Propagation::Stop
 }
 
-/// The saved NDI source isn't on the network (and no renamed copy of it was
-/// found to switch to).
-fn not_found_text(seen: &[String]) -> String {
-    if seen.is_empty() {
-        "Not found, and no NDI sources are visible. Is OBS running with its NDI output on?".into()
-    } else {
-        format!("Not found on the network. Visible sources: {}. Edit the host to choose one.", seen.join(", "))
+/// A core message ("looking for …") as a sentence for the placeholder.
+fn sentence(text: &str) -> String {
+    let mut chars = text.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().chain(chars).collect(),
+        None => String::new(),
     }
 }
 
-/// NDI frame age needs the OBS PC's and this computer's clocks to agree;
-/// over a second almost always means they don't.
+/// Capture→screen age (the core corrects for the two clocks' difference).
 fn age_text(ms: f64) -> String {
     if ms < 0.0 {
         "n/a".into()
-    } else if ms > 1000.0 {
-        format!("clocks differ (~{:.1} s)", ms / 1000.0)
     } else {
-        format!("≈{ms:.0} ms OBS→screen")
+        format!("≈{ms:.0} ms capture→screen")
     }
 }

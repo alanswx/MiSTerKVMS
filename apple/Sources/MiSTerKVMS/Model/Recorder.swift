@@ -208,7 +208,7 @@ final class Recorder: MediaSink, @unchecked Sendable {
         return out
     }
 
-    /// NDI timestamps are 100 ns units.
+    /// Timestamps are 100 ns units.
     private static func time(_ ticks: Int64) -> CMTime {
         CMTime(value: max(0, ticks), timescale: 10_000_000)
     }

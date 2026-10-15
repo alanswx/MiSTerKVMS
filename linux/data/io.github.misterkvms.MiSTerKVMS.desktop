@@ -6,5 +6,5 @@ Exec=misterkvms
 Icon=io.github.misterkvms.MiSTerKVMS
 Terminal=false
 Categories=Utility;RemoteAccess;Network;
-Keywords=MiSTer;FPGA;KVM;NDI;
+Keywords=MiSTer;FPGA;KVM;
 StartupNotify=true
