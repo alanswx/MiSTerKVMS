@@ -13,3 +13,7 @@
 # Windows shell build output
 /windows/MiSTerKVMS/bin/
 /windows/MiSTerKVMS/obj/
+
+# iPhone app: generated bindings
+/ios/MiSTerKVMS/Generated/
+xcuserdata/

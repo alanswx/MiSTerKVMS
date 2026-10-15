@@ -47,7 +47,7 @@ Home                                                    Phone
 | `mkvm/` | Gains the secure transport (§3): handshake, framing inside Noise, and the `pair` messages. Pure logic with tests, like the rest of the crate. |
 | `server/` | `devices.json`, pairing, LAN-only plain connections, secure connections, Devices section on the setup page. H.264 encode (C8). |
 | `codec/` | H.264 encode (server) and decode (VideoToolbox on Apple). |
-| `core/` | Builds for `aarch64-apple-ios` and `aarch64-apple-ios-sim`; `NativeSurface::UiKit`; secure connections with a device key; pairing call. No `mdns-sd` or local capture on iOS. |
+| `core/` | Builds for `aarch64-apple-ios` and `aarch64-apple-ios-sim`; `NativeSurface::UiKit`; secure connections with a device key; pairing call. No local capture on iOS. |
 | `ios/` | The iPhone app: Xcode project, SwiftUI/UIKit sources. Uses the same UniFFI bindings (`KVMSCore`) as `apple/`. |
 | `scripts/build-ios.sh` | Rust for device + simulator → `KVMSCore.xcframework` → bindings → `xcodebuild`. |
 
@@ -188,8 +188,8 @@ the app (not per host).
 ### 5.5 iOS specifics
 
 - `NSLocalNetworkUsageDescription` and `NSBonjourServices` (`_mkvm._tcp`).
-  No multicast entitlement: discovery uses `NWBrowser`, and the core's
-  `mdns-sd` is left out of iOS builds.
+  No multicast entitlement: discovery uses `NWBrowser`; the core's
+  `mdns-sd` discovery is compiled in but not called on iOS.
 - `AVAudioSession` category playback, set up by the app before audio starts.
 - The connection closes when the app goes to the background and reconnects
   when it comes back (iOS suspends sockets anyway); control is released on

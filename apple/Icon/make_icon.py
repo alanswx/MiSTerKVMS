@@ -2,6 +2,7 @@
 
     python3 apple/Icon/make_icon.py            # writes AppIcon.icns + AppIcon.png
     python3 apple/Icon/make_icon.py --all      # also renders the other variants
+    python3 apple/Icon/make_icon.py --ios      # the iPhone app's icon (full square)
 
 Needs rsvg-convert (brew install librsvg) and iconutil (Xcode tools).
 MiSTer-Kun artwork: see CREDITS.md in this folder.
@@ -62,8 +63,13 @@ def mouse(x, y, body, edge, line, cord, cord_to):
 """
 
 
+# macOS draws its own icon shape inside the square; iOS masks a full square.
+MAC_BG = '<rect x="100" y="100" width="824" height="824" rx="185" fill="url(#bg)"/>'
+IOS_BG = '<rect width="1024" height="1024" fill="url(#bg)"/>'
+
+
 def icon(bg, body, body_edge, bezel, screen_a, screen_b, kb_body, kb_edge, key, key_edge,
-         led, cord, vents=True):
+         led, cord, vents=True, ios=False):
     mon = dict(x=236, y=176, w=552, h=468)
     sc = dict(x=290, y=226, w=444, h=330)
     return f"""<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
@@ -89,9 +95,9 @@ def icon(bg, body, body_edge, bezel, screen_a, screen_b, kb_body, kb_edge, key, 
   <clipPath id="screenclip"><rect x="{sc['x']}" y="{sc['y']}" width="{sc['w']}" height="{sc['h']}" rx="34"/></clipPath>
 </defs>
 
-<!-- macOS icon shape -->
-<rect x="100" y="100" width="824" height="824" rx="185" fill="url(#bg)"/>
+{IOS_BG if ios else MAC_BG}
 
+<g {'transform="translate(512 512) scale(1.12) translate(-512 -514)"' if ios else ""}>
 <g filter="url(#shadow)">
   <!-- stand -->
   <path d="M430,640 H594 L626,690 H398 Z" fill="{body_edge}"/>
@@ -111,6 +117,7 @@ def icon(bg, body, body_edge, bezel, screen_a, screen_b, kb_body, kb_edge, key, 
   <!-- keyboard and mouse -->
   {keyboard(268, 724, 400, 118, kb_body, kb_edge, key, key_edge)}
   {mouse(706, 742, kb_body, kb_edge, kb_edge, cord, (668, 760))}
+</g>
 </g>
 </svg>
 """
@@ -143,7 +150,25 @@ def render(svg: Path, png: Path, size: int):
     subprocess.run(["rsvg-convert", "-w", str(size), "-h", str(size), str(svg), "-o", str(png)], check=True)
 
 
+def ios_icon():
+    """1024 px, opaque (App Store icons may not have an alpha channel)."""
+    out = HERE.parent.parent / "ios/MiSTerKVMS/Assets.xcassets/AppIcon.appiconset/AppIcon.png"
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp = Path(tmp)
+        svg = tmp / "ios.svg"
+        svg.write_text(icon(**VARIANTS[CHOSEN], ios=True))
+        render(svg, tmp / "rgba.png", 1024)
+        subprocess.run(["sips", "-s", "format", "jpeg", "-s", "formatOptions", "100", str(tmp / "rgba.png"),
+                        "--out", str(tmp / "flat.jpg")], check=True, capture_output=True)
+        subprocess.run(["sips", "-s", "format", "png", str(tmp / "flat.jpg"), "--out", str(out)],
+                       check=True, capture_output=True)
+    print(f"Wrote {out}")
+
+
 if __name__ == "__main__":
+    if "--ios" in sys.argv:
+        ios_icon()
+        sys.exit()
     names = VARIANTS if "--all" in sys.argv else [CHOSEN]
     with tempfile.TemporaryDirectory() as tmp:
         tmp = Path(tmp)
