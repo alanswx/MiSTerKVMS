@@ -166,6 +166,9 @@ struct State {
     recording_error: Option<String>,
     last_model_save: Instant,
     limits: StreamLimits,
+    /// The open stream is connected from the internet: the predictive cursor
+    /// uses (and learns) the internet switch and model.
+    route_internet: bool,
 }
 
 impl Default for State {
@@ -197,6 +200,7 @@ impl Default for State {
             recording_error: None,
             last_model_save: Instant::now(),
             limits: StreamLimits::default(),
+            route_internet: false,
         }
     }
 }
@@ -225,6 +229,25 @@ pub struct PairResult {
     pub key_id: String,
     pub key: String,
     pub internet_address: String,
+    /// Under which name to keep the key (the capture PC's id).
+    pub server_id: String,
+    /// The capture PC's existing key was reused; nothing new to save.
+    pub reused: bool,
+}
+
+/// Keys of capture PCs older than server ids are kept under this prefix and
+/// the PC's home address.
+const ADDRESS_KEY: &str = "addr:";
+
+/// Under which name a host's device key is kept (`Controller::device_key_server`).
+fn key_server(profile: &HostProfile) -> String {
+    if !profile.server_id.is_empty() {
+        return profile.server_id.clone();
+    }
+    match mkvm::StreamAddress::parse(&profile.stream) {
+        Ok(a) => format!("{ADDRESS_KEY}{}:{}", a.host.to_lowercase(), a.port),
+        Err(_) => format!("{ADDRESS_KEY}{}", profile.id),
+    }
 }
 
 #[derive(uniffi::Object)]
@@ -330,6 +353,7 @@ impl Controller {
             s.display = profile.display_settings();
             s.profile = Some(profile.clone());
             s.generation += 1;
+            s.route_internet = false;
             let observer = Arc::new(Observer { inner: Arc::downgrade(&self.inner), generation: s.generation });
             if profile.source_kind() == SourceKind::Capture && profile.stream.trim().is_empty() {
                 if profile.mister_host.trim().is_empty() {
@@ -444,52 +468,109 @@ impl Controller {
         self.inner.notify(ControllerEvent::Changed);
     }
 
-    /// Pair this device with a host's capture server, on the home network,
-    /// to connect from the internet too (docs/IPHONE.md §2): the server
-    /// issues a key, which this returns for the shell to keep (Keychain) and
-    /// hand back with `set_device_key` on later starts. The host's "use over
-    /// the internet" and internet address are saved, and an open host
-    /// reconnects encrypted. Blocks up to ~10 s: call it off the main thread.
-    pub fn pair_device(&self, id: String, device_name: String) -> Result<PairResult, ControllerError> {
+    /// Use a host over the internet (docs/IPHONE.md §2): this device keeps
+    /// one key per capture PC, shared by all its streams. If it already has
+    /// one for this host's capture PC, it's reused at once; otherwise (or
+    /// with `again`, after a revoke) it pairs on the home network, and the
+    /// key comes back for the shell to keep (Keychain, filed under
+    /// `server_id`) and hand back with `set_device_key` on later starts.
+    /// Saves the host's "use over the internet", capture PC and internet
+    /// address; an open host reconnects encrypted. Blocks up to ~15 s: call
+    /// it off the main thread.
+    pub fn pair_device(&self, id: String, device_name: String, again: bool) -> Result<PairResult, ControllerError> {
         let failed = |message: String| ControllerError::Failed { message };
         let profile = self.inner.store.get(&id).ok_or_else(|| failed("no such host".into()))?;
         let address = mkvm::StreamAddress::parse(&profile.stream).map_err(failed)?;
-        let paired = crate::link::pair(&address, &device_name).map_err(failed)?;
-        let key = mkvm::secure::DeviceKey::from_hex(&paired.key_id, &paired.key).ok_or_else(|| failed("the server sent a malformed key".into()))?;
-        self.inner.device_keys.lock().unwrap().insert(id.clone(), key);
-        let server_address = paired.internet_address.trim().to_string();
+        // Which capture PC: known from connecting before, else asked now (a
+        // stream added with the internet switch on has never connected).
+        let mut server = key_server(&profile);
+        if profile.server_id.is_empty() {
+            if let Ok(found) = crate::link::server_id(&address, &device_name) {
+                if !found.is_empty() {
+                    server = found;
+                }
+            }
+        }
+        let existing = self.inner.device_keys.lock().unwrap().get(&server).cloned();
+        let (key, server_address, reused) = match existing {
+            Some(key) if !again => (key, String::new(), true),
+            existing => {
+                let paired = crate::link::pair(&address, &device_name, existing.map(|k| k.id_hex())).map_err(failed)?;
+                let key = mkvm::secure::DeviceKey::from_hex(&paired.key_id, &paired.key)
+                    .ok_or_else(|| failed("the server sent a malformed key".into()))?;
+                if !paired.server_id.is_empty() {
+                    server = paired.server_id;
+                }
+                (key, paired.internet_address.trim().to_string(), false)
+            }
+        };
+        self.inner.device_keys.lock().unwrap().insert(server.clone(), key.clone());
+        // The address from the server, else one this capture PC's other
+        // streams already use.
+        let profiles = self.inner.store.data().profiles;
+        let sibling_address =
+            profiles.iter().filter(|p| key_server(p) == server && !p.internet_address.trim().is_empty()).map(|p| p.internet_address.clone()).next();
+        let internet_address = if !server_address.is_empty() { Some(server_address) } else { sibling_address };
+        let server_id = if server.starts_with(ADDRESS_KEY) { String::new() } else { server.clone() };
         self.inner.store.update(&id, |p| {
             p.use_internet = true;
-            if !server_address.is_empty() {
-                p.internet_address = server_address.clone();
+            if !server_id.is_empty() {
+                p.server_id = server_id.clone();
+            }
+            if let Some(a) = &internet_address {
+                if p.internet_address.trim().is_empty() || !reused {
+                    p.internet_address = a.clone();
+                }
             }
         });
-        log(&format!("host: '{}' paired for the internet ({})", profile.name, paired.key_id));
+        log(&format!(
+            "host: '{}' over the internet with {} key {}",
+            profile.name,
+            if reused { "this capture PC's" } else { "a new" },
+            key.id_hex()
+        ));
         self.reopen_if_open(&id);
         self.inner.notify(ControllerEvent::ProfilesChanged);
-        Ok(PairResult { key_id: paired.key_id, key: paired.key, internet_address: paired.internet_address })
+        let saved = self.inner.store.get(&id).map(|p| p.internet_address).unwrap_or_default();
+        Ok(PairResult { key_id: key.id_hex(), key: key.key_hex(), internet_address: saved, server_id: server, reused })
     }
 
-    /// A paired host's device key, from where the shell keeps it. Ignored
-    /// if malformed.
-    pub fn set_device_key(&self, id: String, key_id: String, key: String) {
+    /// A capture PC's device key (`server_id` as `device_key_server` or
+    /// `PairResult` named it), from where the shell keeps it. Ignored if
+    /// malformed.
+    pub fn set_device_key(&self, server_id: String, key_id: String, key: String) {
         if let Some(key) = mkvm::secure::DeviceKey::from_hex(&key_id, &key) {
-            self.inner.device_keys.lock().unwrap().insert(id, key);
+            self.inner.device_keys.lock().unwrap().insert(server_id, key);
         }
     }
 
-    /// Stop using the internet for a host and forget its key here (the
-    /// server keeps it until revoked on its setup page).
-    pub fn forget_device_key(&self, id: String) {
-        self.inner.device_keys.lock().unwrap().remove(&id);
-        self.inner.store.update(&id, |p| p.use_internet = false);
-        self.reopen_if_open(&id);
-        self.inner.notify(ControllerEvent::ProfilesChanged);
+    /// Under which name a host's key is kept: its capture PC's id (or its
+    /// home address, for servers older than ids).
+    pub fn device_key_server(&self, id: String) -> String {
+        self.inner.store.get(&id).map(|p| key_server(&p)).unwrap_or_default()
     }
 
-    /// Whether this device holds a key for the host.
+    /// Stop using a host over the internet. Returns whether the key is still
+    /// needed (another stream of the same capture PC uses it); if not, it's
+    /// forgotten here and the shell should delete its copy. (The server keeps
+    /// it until revoked on its setup page.)
+    pub fn stop_internet(&self, id: String) -> bool {
+        let Some(profile) = self.inner.store.get(&id) else { return false };
+        let server = key_server(&profile);
+        self.inner.store.update(&id, |p| p.use_internet = false);
+        let still_needed = self.inner.store.data().profiles.iter().any(|p| p.id != id && p.use_internet && key_server(p) == server);
+        if !still_needed {
+            self.inner.device_keys.lock().unwrap().remove(&server);
+        }
+        self.reopen_if_open(&id);
+        self.inner.notify(ControllerEvent::ProfilesChanged);
+        still_needed
+    }
+
+    /// Whether this device holds a key for the host's capture PC.
     pub fn has_device_key(&self, id: String) -> bool {
-        self.inner.device_keys.lock().unwrap().contains_key(&id)
+        let Some(profile) = self.inner.store.get(&id) else { return false };
+        self.inner.device_keys.lock().unwrap().contains_key(&key_server(&profile))
     }
 
     /// This viewer's own limits for capture server streams (a phone: its
@@ -650,13 +731,14 @@ impl Controller {
         let (video, id) = {
             let mut s = self.inner.state.lock().unwrap();
             s.display = d.clone();
+            let internet = s.route_internet;
             if let Some(p) = s.profile.as_mut() {
-                p.store_display(&d);
+                p.store_display(&d, internet);
             }
-            (s.video.clone(), s.profile.as_ref().map(|p| p.id.clone()))
+            (s.video.clone(), s.profile.as_ref().map(|p| (p.id.clone(), internet)))
         };
-        if let Some(id) = id {
-            self.inner.store.update(&id, |p| p.store_display(&d));
+        if let Some((id, internet)) = id {
+            self.inner.store.update(&id, |p| p.store_display(&d, internet));
         }
         if let Some(v) = video {
             v.set_display(d);
@@ -966,12 +1048,13 @@ impl Inner {
         }
     }
 
-    /// Remember what the predictive cursor learned for next time.
+    /// Remember what the predictive cursor learned for next time (for the
+    /// route in use: home and the internet each have their own).
     fn save_cursor_model(&self) {
-        let (video, id) = {
+        let (video, id, internet) = {
             let mut s = self.state.lock().unwrap();
             s.last_model_save = Instant::now();
-            (s.video.clone(), s.profile.as_ref().map(|p| p.id.clone()))
+            (s.video.clone(), s.profile.as_ref().map(|p| p.id.clone()), s.route_internet)
         };
         let (Some(video), Some(id)) = (video, id) else { return };
         // Nothing measured this session: keep what was saved before.
@@ -980,9 +1063,41 @@ impl Inner {
         }
         let model = video.cursor_model();
         self.store.update(&id, |p| {
-            p.cursor_lag_ms = model.lag_ms;
-            p.cursor_gain = model.gain;
+            if internet {
+                p.cursor_lag_internet_ms = model.lag_ms;
+                p.cursor_gain_internet = model.gain;
+            } else {
+                p.cursor_lag_ms = model.lag_ms;
+                p.cursor_gain = model.gain;
+            }
         });
+    }
+
+    /// The connection switched between home and the internet: keep what the
+    /// cursor learned on the old route, then use the new route's switch and
+    /// model.
+    fn route_changed(&self, internet: bool) {
+        self.save_cursor_model();
+        let (video, display, profile) = {
+            let mut s = self.state.lock().unwrap();
+            s.route_internet = internet;
+            let Some(profile) = s.profile.clone() else { return };
+            let (enabled, _, _) = profile.cursor_for(internet);
+            s.display.predictive_cursor = enabled;
+            (s.video.clone(), s.display.clone(), profile)
+        };
+        let cursor_on = display.predictive_cursor;
+        let Some(video) = video else { return };
+        video.set_display(display);
+        let (_, lag, gain) = profile.cursor_for(internet);
+        if lag > 0.0 {
+            video.set_cursor_model(CursorModel { lag_ms: lag, gain: if gain > 0.0 { gain } else { 1.0 } });
+        } else if internet {
+            // Nothing learned from the internet yet: start from a typical
+            // mobile delay rather than home's.
+            video.set_cursor_model(CursorModel { lag_ms: 250.0, gain: if profile.cursor_gain > 0.0 { profile.cursor_gain } else { 1.0 } });
+        }
+        log(&format!("host: connected {}: predictive cursor {}", if internet { "from the internet" } else { "at home" }, if cursor_on { "on" } else { "off" }));
     }
 
     fn recording_started(&self, recorder: Recorder) {
@@ -1040,7 +1155,7 @@ impl Inner {
         if !profile.use_internet {
             return None;
         }
-        let key = self.device_keys.lock().unwrap().get(&profile.id).cloned()?;
+        let key = self.device_keys.lock().unwrap().get(&key_server(profile)).cloned()?;
         let internet = profile.internet_address.trim();
         let internet = (!internet.is_empty())
             .then(|| mkvm::StreamAddress::parse(&format!("mkvm://{internet}/x")).ok())
@@ -1107,12 +1222,22 @@ impl Inner {
         let stream = link.map(|l| l.stream_state());
         let input_stats = session.map(|s| s.stats());
         let video_stats = video.map(|v| v.stats());
-        let (save_model, lost_control) = {
+        let (save_model, lost_control, route, server_id) = {
             let mut s = self.state.lock().unwrap();
             // Someone took control: stop capturing here.
             let had = s.stream.as_ref().is_some_and(|st| st.have_control);
             let has = stream.as_ref().is_some_and(|st| st.have_control);
             let lost_control = had && !has && s.capturing;
+            let connected = stream.as_ref().filter(|st| st.connected);
+            let route = connected.map(|st| st.internet).filter(|&internet| internet != s.route_internet);
+            // The capture PC's id, first learned (or changed): kept with the host.
+            let server_id = connected
+                .map(|st| st.server_id.clone())
+                .filter(|id| !id.is_empty() && s.profile.as_ref().is_some_and(|p| p.server_id != *id));
+            if let (Some(id), Some(p)) = (&server_id, s.profile.as_mut()) {
+                p.server_id = id.clone();
+            }
+            let server_id = server_id.zip(s.profile.as_ref().map(|p| p.id.clone()));
             s.stream = stream;
             s.input_stats = input_stats;
             s.video_stats = video_stats;
@@ -1120,9 +1245,15 @@ impl Inner {
             if s.stats_visible && Instant::now() >= s.stats_hide_at {
                 s.stats_visible = false;
             }
-            (s.last_model_save.elapsed() >= MODEL_SAVE, lost_control)
+            (s.last_model_save.elapsed() >= MODEL_SAVE, lost_control, route, server_id)
         };
-        if save_model {
+        if let Some((server, id)) = server_id {
+            self.store.update(&id, |p| p.server_id = server.clone());
+            self.notify(ControllerEvent::ProfilesChanged);
+        }
+        if let Some(internet) = route {
+            self.route_changed(internet);
+        } else if save_model {
             self.save_cursor_model();
         }
         if lost_control {
@@ -1319,7 +1450,7 @@ mod tests {
                 sizes: vec![],
                 codecs: vec![Codec::Jpeg],
             };
-            write_message(&mut sock, &Message::Welcome(Welcome { protocol: 1, server: "test".into(), viewer_id: 1, stream: info }), 0).unwrap();
+            write_message(&mut sock, &Message::Welcome(Welcome { protocol: 1, server: "test".into(), server_id: String::new(), viewer_id: 1, stream: info }), 0).unwrap();
             write_message(&mut sock, &Message::Mister(MisterState { connected: true, reason: String::new() }), 0).unwrap();
             write_message(&mut sock, &Message::Control(ControlState { holder: Some(Viewer { id: 1, name: hello.viewer }), you: true }), 0).unwrap();
             write_message(&mut sock, &Message::Status(Status { key: "coreRunning".into(), value: "HP9K715".into() }), 0).unwrap();

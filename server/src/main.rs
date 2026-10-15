@@ -88,6 +88,8 @@ pub struct Server {
     discovery: Mutex<Option<discovery::Discovery>>,
     /// Paired devices (keys for connecting from the internet).
     pub devices: devices::Devices,
+    /// This capture PC's permanent id (config::server_id).
+    pub id: String,
 }
 
 impl Server {
@@ -219,6 +221,7 @@ pub fn serve(dir: PathBuf, as_service: bool) -> Result<(), String> {
         streams: Mutex::new(Vec::new()),
         discovery: Mutex::new(discovery::Discovery::start().map_err(|e| log(&format!("mDNS: {e}"))).ok()),
         devices: devices::Devices::load(&dir),
+        id: config::server_id(&dir),
     });
     let patience = Instant::now() + Duration::from_secs(if as_service { 45 } else { 0 });
     retry(patience, || net::listen(server.clone(), settings.port).map_err(|e| format!("can't listen on TCP {}: {e}", settings.port)))?;

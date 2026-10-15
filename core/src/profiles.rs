@@ -60,6 +60,15 @@ pub struct HostProfile {
     /// How the capture server is reached from the internet ("host:port"),
     /// as the server handed it over when pairing; the user may change it.
     pub internet_address: String,
+    /// The capture PC's permanent id, learned when connecting or pairing:
+    /// a device keeps one key per capture PC, shared by its streams.
+    pub server_id: String,
+    /// The predictive cursor from the internet, where the lag is longer and
+    /// jumpier: its own switch (off by default) and its own learned model,
+    /// so it doesn't spoil the one learned at home.
+    pub predictive_cursor_internet: bool,
+    pub cursor_lag_internet_ms: f64,
+    pub cursor_gain_internet: f64,
 }
 
 impl Default for HostProfile {
@@ -85,6 +94,10 @@ impl Default for HostProfile {
             cursor_gain: 0.0,
             use_internet: false,
             internet_address: String::new(),
+            server_id: String::new(),
+            predictive_cursor_internet: false,
+            cursor_lag_internet_ms: 0.0,
+            cursor_gain_internet: 0.0,
         }
     }
 }
@@ -135,12 +148,26 @@ impl HostProfile {
         }
     }
 
-    /// Remember the per-host parts of `display` (not zoom/pan).
-    pub fn store_display(&mut self, display: &DisplaySettings) {
+    /// Remember the per-host parts of `display` (not zoom/pan); the
+    /// predictive cursor switch for the route in use.
+    pub fn store_display(&mut self, display: &DisplaySettings, internet: bool) {
         self.scale_mode = display.scale_mode.name().into();
         self.smooth_scaling = display.smooth;
         self.auto_crop = display.auto_crop;
-        self.predictive_cursor = display.predictive_cursor;
+        if internet {
+            self.predictive_cursor_internet = display.predictive_cursor;
+        } else {
+            self.predictive_cursor = display.predictive_cursor;
+        }
+    }
+
+    /// The predictive cursor's switch and learned model for a route.
+    pub fn cursor_for(&self, internet: bool) -> (bool, f64, f64) {
+        if internet {
+            (self.predictive_cursor_internet, self.cursor_lag_internet_ms, self.cursor_gain_internet)
+        } else {
+            (self.predictive_cursor, self.cursor_lag_ms, self.cursor_gain)
+        }
     }
 
     /// Call when saving an edited copy of `before`: if the mouse scaling
@@ -148,6 +175,7 @@ impl HostProfile {
     pub fn reset_learned_if_mouse_changed(&mut self, before: &HostProfile) {
         if self.raw_mouse != before.raw_mouse || self.mouse_sensitivity != before.mouse_sensitivity {
             self.cursor_gain = 0.0;
+            self.cursor_gain_internet = 0.0;
         }
     }
 }

@@ -177,6 +177,7 @@ fn serve(server: Arc<Server>, sock: TcpStream) -> Result<(), String> {
         Err(e) => return Err(e.to_string()),
     }
     // A paired device's encrypted connection, or a plain one.
+    let mut device_id = None;
     let (mut read, mut write, device): (Reader, Writer, Option<String>) = if &first == secure::MAGIC {
         let id = secure::read_prelude(&mut Sock(sock.clone())).map_err(|e| e.to_string())?;
         if !home && !server.settings().remote_enabled {
@@ -189,6 +190,7 @@ fn serve(server: Arc<Server>, sock: TcpStream) -> Result<(), String> {
         };
         let session = secure::accept(&mut Sock(sock.clone()), &key).map_err(|e| e.to_string())?;
         server.devices.connected(&id, &address, &sock);
+        device_id = Some(id);
         (
             BufReader::with_capacity(64 * 1024, Box::new(SecureReader::new(Sock(sock.clone()), session.clone()))),
             BufWriter::with_capacity(256 * 1024, Box::new(SecureWriter::new(Sock(sock.clone()), session))),
@@ -225,6 +227,10 @@ fn serve(server: Arc<Server>, sock: TcpStream) -> Result<(), String> {
         return refuse(&mut write, format!("no stream '{}' on this server (streams: {names})", hello.stream));
     };
     sock.set_read_timeout(None).ok();
+    if let Some(key_id) = &device_id {
+        // The phone's name may have changed since it paired.
+        server.devices.rename(key_id, &hello.viewer);
+    }
     let id = NEXT_VIEWER.fetch_add(1, Ordering::Relaxed);
     let name = if hello.viewer.trim().is_empty() { format!("Viewer {id}") } else { hello.viewer.trim().to_string() };
     let via = match &device {
@@ -233,7 +239,8 @@ fn serve(server: Arc<Server>, sock: TcpStream) -> Result<(), String> {
         None => String::new(),
     };
     log(&format!("viewer {id} '{name}' ({}{via}) joined '{}'", hello.platform, stream.config.name));
-    let welcome = Welcome { protocol: PROTOCOL_VERSION, server: crate::server_name(), viewer_id: id, stream: stream.info() };
+    let welcome =
+        Welcome { protocol: PROTOCOL_VERSION, server: crate::server_name(), server_id: server.id.clone(), viewer_id: id, stream: stream.info() };
     write_message(&mut write, &Message::Welcome(welcome), now_100ns()).map_err(|e| e.to_string())?;
     write.flush().map_err(|e| e.to_string())?;
 
@@ -289,8 +296,13 @@ fn pair(server: &Server, request: Pair, address: &str, write: &mut Writer) -> Re
                 .into(),
         })
     } else {
-        match server.devices.pair(&request.device, address) {
-            Ok(key) => Message::Paired(Paired { key_id: key.id_hex(), key: key.key_hex(), internet_address: settings.remote_address }),
+        match server.devices.pair(&request.device, address, request.replaces.as_deref()) {
+            Ok(key) => Message::Paired(Paired {
+                key_id: key.id_hex(),
+                key: key.key_hex(),
+                internet_address: settings.remote_address,
+                server_id: server.id.clone(),
+            }),
             Err(e) => Message::Error(ErrorMsg { message: format!("can't make a key: {e}") }),
         }
     };

@@ -145,6 +145,28 @@ pub fn load_streams(dir: &Path) -> Streams {
     }
 }
 
+/// This capture PC's permanent id (32 hex characters, made once and kept in
+/// `server-id` in the config folder): paired devices keep one key per
+/// capture PC by it, whatever address reaches the PC.
+pub fn server_id(dir: &Path) -> String {
+    let path = dir.join("server-id");
+    if let Ok(id) = std::fs::read_to_string(&path) {
+        let id = id.trim();
+        if id.len() == 32 && id.chars().all(|c| c.is_ascii_hexdigit()) {
+            return id.to_string();
+        }
+    }
+    let id = mkvm::secure::DeviceKey::generate().map(|k| k.id_hex()).unwrap_or_else(|e| {
+        crate::log(&format!("config: can't make a server id: {e}"));
+        "0".repeat(32)
+    });
+    let _ = std::fs::create_dir_all(dir);
+    if let Err(e) = std::fs::write(&path, &id) {
+        crate::log(&format!("config: can't save {}: {e}", path.display()));
+    }
+    id
+}
+
 pub fn save_streams(dir: &Path, streams: &Streams) -> std::io::Result<()> {
     std::fs::create_dir_all(dir)?;
     let tmp = dir.join("capture.json.tmp");

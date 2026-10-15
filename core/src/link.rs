@@ -69,6 +69,8 @@ pub struct StreamState {
     pub round_trip_ms: f64,
     /// Connected from the internet (encrypted), not at home.
     pub internet: bool,
+    /// The capture PC's permanent id (empty: an older server).
+    pub server_id: String,
 }
 
 #[derive(Default)]
@@ -154,6 +156,7 @@ impl MkvmLink {
             holder: control.and_then(|c| if c.you { None } else { c.holder.map(|h| h.name) }).unwrap_or_default(),
             round_trip_ms: s.round_trip_ms,
             internet: s.connected && s.internet,
+            server_id: s.welcome.as_ref().map(|w| w.server_id.clone()).unwrap_or_default(),
         }
     }
 
@@ -337,14 +340,38 @@ fn open(link: &MkvmLink) -> Result<(TcpStream, bool), String> {
 }
 
 /// Ask a capture server on the home network for a device key, to connect
-/// from the internet with later (docs/IPHONE.md §2).
-pub fn pair(address: &StreamAddress, device: &str) -> Result<Paired, String> {
+/// from the internet with later (docs/IPHONE.md §2). `replaces`: the key
+/// this device had for it, which the server then drops.
+pub fn pair(address: &StreamAddress, device: &str, replaces: Option<String>) -> Result<Paired, String> {
     let sock = tcp(address, CONNECT_TIMEOUT)?;
     sock.set_read_timeout(Some(Duration::from_secs(10))).ok();
     let mut write = sock.try_clone().map_err(|e| e.to_string())?;
-    write_message(&mut write, &Message::Pair(Pair { device: device.to_string() }), mkvm_now()).map_err(|e| e.to_string())?;
+    write_message(&mut write, &Message::Pair(Pair { device: device.to_string(), replaces }), mkvm_now()).map_err(|e| e.to_string())?;
     match read_message(&mut BufReader::new(sock)).map_err(|e| e.to_string())?.0 {
         Message::Paired(p) => Ok(p),
+        Message::Error(e) => Err(e.message),
+        other => Err(format!("unexpected answer {other:?}")),
+    }
+}
+
+/// The capture PC's permanent id, asked of a stream on the home network
+/// (Hello, Welcome, hang up). Empty from servers older than server ids.
+pub fn server_id(address: &StreamAddress, viewer: &str) -> Result<String, String> {
+    let sock = tcp(address, CONNECT_TIMEOUT)?;
+    sock.set_read_timeout(Some(Duration::from_secs(5))).ok();
+    let mut write = sock.try_clone().map_err(|e| e.to_string())?;
+    let hello = Message::Hello(Hello {
+        protocol: mkvm::PROTOCOL_VERSION,
+        stream: address.stream.clone(),
+        viewer: viewer.to_string(),
+        platform: std::env::consts::OS.into(),
+        codecs: vec![Codec::Jpeg],
+    });
+    write_message(&mut write, &hello, mkvm_now()).map_err(|e| e.to_string())?;
+    let answer = read_message(&mut BufReader::new(sock.try_clone().map_err(|e| e.to_string())?)).map_err(|e| e.to_string())?.0;
+    let _ = sock.shutdown(Shutdown::Both);
+    match answer {
+        Message::Welcome(w) => Ok(w.server_id),
         Message::Error(e) => Err(e.message),
         other => Err(format!("unexpected answer {other:?}")),
     }

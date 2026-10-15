@@ -125,6 +125,10 @@ pub struct StreamInfo {
 pub struct Welcome {
     pub protocol: u32,
     pub server: String,
+    /// The capture PC's permanent id (random, made once): paired devices
+    /// keep one key per capture PC, whatever address reaches it.
+    #[serde(default)]
+    pub server_id: String,
     /// This viewer's id on the stream (matches `ControlState.holder.id`).
     pub viewer_id: u32,
     pub stream: StreamInfo,
@@ -201,6 +205,10 @@ pub struct Gap {
 pub struct Pair {
     /// Shown on the setup page's device list ("Dani's iPhone").
     pub device: String,
+    /// The key id this device had for this server, if any: the server drops
+    /// it, so pairing again doesn't leave a stale entry behind.
+    #[serde(default)]
+    pub replaces: Option<String>,
 }
 
 /// Server → viewer: the new device key (hex) and where the server can be
@@ -210,12 +218,15 @@ pub struct Paired {
     pub key_id: String,
     pub key: String,
     pub internet_address: String,
+    /// The capture PC's permanent id (as in `Welcome`).
+    #[serde(default)]
+    pub server_id: String,
 }
 
 impl std::fmt::Debug for Paired {
     // Never print the key itself.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Paired {{ key_id: {}, internet_address: {:?} }}", self.key_id, self.internet_address)
+        write!(f, "Paired {{ key_id: {}, internet_address: {:?}, server_id: {} }}", self.key_id, self.internet_address, self.server_id)
     }
 }
 

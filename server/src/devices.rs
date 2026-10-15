@@ -83,8 +83,12 @@ impl Devices {
         }
     }
 
-    /// Issue a key for a device on the home network.
-    pub fn pair(&self, name: &str, address: &str) -> std::io::Result<DeviceKey> {
+    /// Issue a key for a device on the home network. `replaces`: the key it
+    /// had here before, dropped so pairing again leaves no stale entry.
+    pub fn pair(&self, name: &str, address: &str, replaces: Option<&str>) -> std::io::Result<DeviceKey> {
+        if let Some(old) = replaces {
+            self.revoke(old);
+        }
         let key = DeviceKey::generate()?;
         let name: String = name.trim().chars().take(64).collect();
         let name = if name.is_empty() { "Device".to_string() } else { name };
@@ -107,6 +111,22 @@ impl Devices {
         let id = secure::hex(id);
         let list = self.list.lock().unwrap();
         list.iter().find(|d| d.key_id == id).and_then(|d| secure::unhex::<KEY_LEN>(&d.key))
+    }
+
+    /// A paired device connected under another name (renamed on the phone):
+    /// the list shows the new one.
+    pub fn rename(&self, id: &[u8; KEY_ID_LEN], name: &str) {
+        let id = secure::hex(id);
+        let name: String = name.trim().chars().take(64).collect();
+        if name.is_empty() {
+            return;
+        }
+        let mut list = self.list.lock().unwrap();
+        if let Some(d) = list.iter_mut().find(|d| d.key_id == id && d.name != name) {
+            log(&format!("devices: '{}' is now '{name}' ({id})", d.name));
+            d.name = name;
+            self.save(&list);
+        }
     }
 
     /// The device's name, for the log and the viewer list.
@@ -180,7 +200,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("mkvm-devices-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let devices = Devices::load(&dir);
-        let key = devices.pair("  Dani's iPhone  ", "192.168.1.20").unwrap();
+        let key = devices.pair("  Dani's iPhone  ", "192.168.1.20", None).unwrap();
         assert_eq!(devices.key(&key.id), Some(key.key));
         assert_eq!(devices.name(&key.id).as_deref(), Some("Dani's iPhone"));
         // Survives a restart; the list never shows the key.
@@ -188,6 +208,13 @@ mod tests {
         assert_eq!(again.key(&key.id), Some(key.key));
         let shown = serde_json::to_string(&again.list()).unwrap();
         assert!(!shown.contains(&key.key_hex()));
+        // Renamed on the phone; pairing again replaces the old key.
+        again.rename(&key.id, "Living room iPhone");
+        assert_eq!(again.name(&key.id).as_deref(), Some("Living room iPhone"));
+        let newer = again.pair("Living room iPhone", "192.168.1.20", Some(&key.id_hex())).unwrap();
+        assert_eq!(again.key(&key.id), None);
+        assert_eq!(again.list().len(), 1);
+        let key = newer;
         assert!(again.revoke(&key.id_hex()));
         assert_eq!(again.key(&key.id), None);
         assert!(!again.revoke(&key.id_hex()));

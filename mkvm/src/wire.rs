@@ -180,12 +180,18 @@ mod tests {
             codec: Some(Codec::H264),
             quality: Some(70),
         }));
-        round_trip(Message::Pair(Pair { device: "Dani's iPhone".into() }));
+        round_trip(Message::Pair(Pair { device: "Dani's iPhone".into(), replaces: Some("00112233445566778899aabbccddeeff".into()) }));
         round_trip(Message::Paired(Paired {
             key_id: "00112233445566778899aabbccddeeff".into(),
             key: "ab".repeat(32),
             internet_address: "myhome.example.org:5970".into(),
+            server_id: "5f0e3c9a1b2d4e6f8a7b9c0d1e2f3a4b".into(),
         }));
+        // From an older peer: the new fields default.
+        assert_eq!(
+            Message::decode(0x05, 0, br#"{"device":"old phone"}"#.to_vec()).unwrap(),
+            Message::Pair(Pair { device: "old phone".into(), replaces: None })
+        );
         round_trip(Message::Input(vec![
             InputCmd::Send { m: "kbdRawDown:30".into() },
             InputCmd::Move { dx: 1.5, dy: -2.0 },
@@ -197,6 +203,7 @@ mod tests {
         round_trip(Message::Welcome(Welcome {
             protocol: 1,
             server: "misterkvms-capture 0.9.0".into(),
+            server_id: "5f0e3c9a1b2d4e6f8a7b9c0d1e2f3a4b".into(),
             viewer_id: 3,
             stream: StreamInfo {
                 name: "MiSTer SS1".into(),
