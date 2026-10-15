@@ -1531,7 +1531,7 @@ checksum = "e2db585e1d738fc771bf08a151420d3ed193d9d895a36df7f6f8a9456b911ddc"
 
 [[package]]
 name = "kvms-capture"
-version = "0.9.0"
+version = "1.0.0"
 dependencies = [
  "block2",
  "cpal",
@@ -1548,7 +1548,7 @@ dependencies = [
 
 [[package]]
 name = "kvms-cli"
-version = "0.9.0"
+version = "1.0.0"
 dependencies = [
  "clap",
  "kvms-capture",
@@ -1564,7 +1564,7 @@ dependencies = [
 
 [[package]]
 name = "kvms-codec"
-version = "0.9.0"
+version = "1.0.0"
 dependencies = [
  "jpeg-encoder",
  "zune-core",
@@ -1573,7 +1573,7 @@ dependencies = [
 
 [[package]]
 name = "kvms-core"
-version = "0.9.0"
+version = "1.0.0"
 dependencies = [
  "bytemuck",
  "cpal",
@@ -1594,7 +1594,7 @@ dependencies = [
 
 [[package]]
 name = "kvms-linux"
-version = "0.9.0"
+version = "1.0.0"
 dependencies = [
  "gdk4-wayland",
  "gdk4-x11",
@@ -1777,7 +1777,7 @@ dependencies = [
 
 [[package]]
 name = "misterkvms-capture"
-version = "0.9.0"
+version = "1.0.0"
 dependencies = [
  "clap",
  "kvms-capture",
@@ -1796,7 +1796,7 @@ dependencies = [
 
 [[package]]
 name = "mkvm"
-version = "0.9.0"
+version = "1.0.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -3033,7 +3033,7 @@ dependencies = [
 
 [[package]]
 name = "uniffi-bindgen"
-version = "0.9.0"
+version = "1.0.0"
 dependencies = [
  "uniffi",
 ]
