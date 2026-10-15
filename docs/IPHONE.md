@@ -278,10 +278,12 @@ One-time setup:
    testers get each build without Apple's review, through the TestFlight
    app, once processing finishes (usually 5–30 minutes).
 
-The app declares no encryption (`ITSAppUsesNonExemptEncryption` = NO in
-`ios/Info.plist`) so builds aren't held for export questions. The secure
-transport (I3) changes that: then the key becomes YES and the export
-compliance answers are needed (§8). The privacy manifest
+The app encrypts its own connections with standard algorithms (§3) and
+declares that exempt (`ITSAppUsesNonExemptEncryption` = NO in
+`ios/Info.plist`, mass market), so uploads aren't held for export
+documentation. Declaring YES instead needs export compliance documentation
+filed in App Store Connect and its `ITSEncryptionExportComplianceCode` in the
+plist; without that code Apple refuses the upload (error 90592). The privacy manifest
 (`PrivacyInfo.xcprivacy`) declares no tracking or data collection and the
 reasons for the system APIs used (UserDefaults, file timestamps, system
 uptime).

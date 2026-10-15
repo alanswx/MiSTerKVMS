@@ -7,10 +7,12 @@
 	<array>
 		<string>_mkvm._tcp</string>
 	</array>
-	<!-- The app encrypts its connections from the internet itself (Noise:
-	     X25519, ChaCha20-Poly1305, BLAKE2s; IPHONE.md §3), not only through
-	     iOS. App Store Connect asks the export compliance questions for it. -->
+	<!-- The app encrypts its own connections from the internet with standard
+	     algorithms (Noise: X25519, ChaCha20-Poly1305, BLAKE2s; IPHONE.md §3),
+	     declared exempt (mass market). Changing that means filing export
+	     compliance documentation in App Store Connect and adding its
+	     ITSEncryptionExportComplianceCode here. -->
 	<key>ITSAppUsesNonExemptEncryption</key>
-	<true/>
+	<false/>
 </dict>
 </plist>
