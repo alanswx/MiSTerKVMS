@@ -5,7 +5,7 @@ import SwiftUI
 struct HostListView: View {
     @EnvironmentObject private var model: AppModel
     @State private var adding = false
-    @State private var renaming: HostProfile?
+    @State private var settingsFor: HostProfile?
 
     var body: some View {
         List {
@@ -13,15 +13,25 @@ struct HostListView: View {
                 Button {
                     model.open(profile)
                 } label: {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(profile.name).font(.headline)
-                        Text(profile.subtitle).font(.subheadline).foregroundStyle(.secondary)
+                    HStack {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(profile.name).font(.headline)
+                            Text(profile.subtitle).font(.subheadline).foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        if profile.useInternet {
+                            Image(systemName: "globe").foregroundStyle(.secondary).accessibilityLabel("Also over the internet")
+                        }
                     }
                 }
                 .tint(.primary)
                 .swipeActions {
                     Button(role: .destructive) { model.delete(profile.id) } label: { Label("Delete", systemImage: "trash") }
-                    Button { renaming = profile } label: { Label("Rename", systemImage: "pencil") }
+                    Button { settingsFor = profile } label: { Label("Settings", systemImage: "gearshape") }
+                }
+                .contextMenu {
+                    Button { settingsFor = profile } label: { Label("Settings", systemImage: "gearshape") }
+                    Button(role: .destructive) { model.delete(profile.id) } label: { Label("Delete", systemImage: "trash") }
                 }
             }
         }
@@ -41,24 +51,7 @@ struct HostListView: View {
             Button { adding = true } label: { Image(systemName: "plus") }
         }
         .sheet(isPresented: $adding) { AddHostView() }
-        .alert("Rename", isPresented: Binding(get: { renaming != nil }, set: { if !$0 { renaming = nil } })) {
-            RenameField(profile: renaming) { name in
-                if var p = renaming, !name.isEmpty { p.name = name; model.save(p) }
-                renaming = nil
-            }
-        }
-    }
-}
-
-private struct RenameField: View {
-    let profile: HostProfile?
-    let done: (String) -> Void
-    @State private var name = ""
-
-    var body: some View {
-        TextField("Name", text: $name).onAppear { name = profile?.name ?? "" }
-        Button("Save") { done(name.trimmingCharacters(in: .whitespaces)) }
-        Button("Cancel", role: .cancel) { done("") }
+        .sheet(item: $settingsFor) { profile in HostSettingsView(hostId: profile.id) }
     }
 }
 

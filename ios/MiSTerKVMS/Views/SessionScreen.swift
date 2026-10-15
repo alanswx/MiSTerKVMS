@@ -74,6 +74,9 @@ struct SessionScreen: View {
     private var misterButton: some View {
         Button { switcherOpen = true } label: {
             HStack(spacing: 6) {
+                if model.state.stream?.internet == true {
+                    Image(systemName: "globe").font(.system(size: 12, weight: .semibold)).accessibilityLabel("Over the internet")
+                }
                 Text(model.profile?.name ?? "MiSTer").font(.subheadline.weight(.semibold)).lineLimit(1)
                 Image(systemName: "chevron.down").font(.system(size: 11, weight: .bold))
             }

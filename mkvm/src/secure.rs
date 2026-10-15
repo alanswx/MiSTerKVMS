@@ -155,8 +155,11 @@ pub fn connect(sock: &mut (impl Read + Write), key: &DeviceKey) -> Result<Sessio
     write_frame(sock, &buf[..n])?;
     let mut reply = Vec::new();
     read_frame(sock, &mut reply).map_err(|e| match e.kind() {
-        // The server closes on an unknown or revoked key.
-        io::ErrorKind::UnexpectedEof => SecureError::Handshake("the server doesn't know this device's key".into()),
+        // The server hangs up on an unknown or revoked key (a reset when our
+        // handshake was still unread).
+        io::ErrorKind::UnexpectedEof | io::ErrorKind::ConnectionReset | io::ErrorKind::ConnectionAborted => SecureError::Handshake(
+            "the capture server doesn't accept this device's key any more (revoked?): pair again on the home network".into(),
+        ),
         _ => SecureError::Io(e),
     })?;
     noise.read_message(&reply, &mut buf).map_err(noise_err)?;

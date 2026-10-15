@@ -53,26 +53,44 @@ Home                                                    Phone
 
 ## 2. Pairing
 
-Pairing happens once, at home, on the LAN:
+Internet access is **opt-in per capture PC**: the setup page's **Internet
+access** section has "Allow connections from the internet" (off by default,
+`[remote] enabled` in `capture.ini`; turned on or off only on the capture PC
+itself), the address phones get, the router's port forward (TCP 5970 to this
+PC's home address) and the paired devices. Off: nothing changes; the server
+takes connections from the home network only.
 
-1. The phone finds the stream (Bonjour, or a typed `host[:port]/stream`) and
-   connects with plain mkvm, as any LAN viewer does.
-2. It sends `pair { device }` (the phone's name). The server only answers
-   this from a LAN address.
+On the phone it's per MiSTer: **Use over the internet** in the MiSTer's
+settings (long-press it in the list, or swipe). Turning it on pairs, once,
+at home:
+
+1. The phone connects to the stream's home address with plain mkvm, as any
+   home viewer does.
+2. It sends `Pair { device }` (the phone's name) instead of `Hello`. The
+   server answers only from a home address, and only when internet access
+   is on; otherwise it explains where to turn it on.
 3. The server creates a **key id** (16 random bytes, not secret) and a
    **key** (32 random bytes from the OS), saves them in `devices.json` in
    the config folder (name, id, key, created, last seen, last address), and
    answers `paired { key_id, key, internet_address }`.
 4. The phone stores the key in the **Keychain** (this device only, not
-   synced) and the internet address with the host.
+   synced; readable after the first unlock) and the internet address with
+   the host. The core gets the key at launch and never writes it to
+   `profiles.json`. If the Keychain refuses, pairing fails rather than
+   seeming to work.
+
+The key crosses the home network in the clear once, during pairing: the
+home network is trusted anyway (P5).
 
 `internet_address` is a field on the setup page ("Address from the
 internet", e.g. `myhome.duckdns.org:5970`) so it's set once on the PC and
 every phone gets it; the phone also lets you type or change it.
 
-The setup page gets a **Devices** section: name, paired, last seen, last
-address, **Revoke**. Revoking deletes the key and drops that device's open
-connections.
+The setup page lists **paired devices**: name, paired, last seen and from
+where, connected now, **Revoke**. Revoking deletes the key and hangs up that
+device's open connections; it can't connect again until it pairs at home.
+Turning the phone's switch off forgets the key on the phone (the server's
+copy stays until revoked).
 
 Any LAN device may pair without approval: the LAN already has full access
 (P5), so an approval step would add nothing. If that changes, a
@@ -105,20 +123,32 @@ Server rules:
   device from outside the home network").
 - LAN means loopback, RFC 1918, link-local, CGNAT `100.64/10` excluded
   (that's a carrier's network), IPv6 ULA and link-local.
-- Some routers and reverse proxies rewrite the source of forwarded
-  connections to their own LAN address, which would make internet clients
-  look local. `[remote] trust_lan = false` in `capture.ini` turns the LAN
-  exception off (then every viewer must pair). The setup page warns when
-  remote access is on and a connection on the forwarded port arrives from
-  the router's own address.
-- A failed handshake is logged with its address; repeated failures from one
-  address are delayed (simple back-off, not a lockout).
+- An encrypted connection from outside the home network is refused while
+  internet access is off, even with a valid key.
+- An unknown or revoked key is logged with its address and the connection
+  closed after a second's pause (it slows guessing; the key space makes
+  guessing hopeless anyway). The phone says the key isn't accepted any more
+  and to pair again at home.
+- Later, if needed: some routers rewrite the source of forwarded
+  connections to their own home address, which would make internet clients
+  look local; a `[remote] trust_lan = false` switch could then require
+  pairing everywhere.
 
 The phone always uses the secure transport once it has a key, at home too
-(same code path, nothing to switch).
+(same code path, nothing to switch). It tries the route that worked last
+first (home or internet), giving it 1.5 s before the other; from the
+internet it asks for at most 30 fps at JPEG quality 70 (§4), and the
+session screen shows a globe next to the MiSTer's name.
 
 ## 4. Video and audio over the internet
 
+- **Now (MJPEG):** each viewer gets the picture its screen needs (the phone
+  sends its video area's size; the server picks the offered size up to 10%
+  above it, e.g. 1280x720 in portrait), and from the internet at most
+  30 fps at JPEG quality 70 (`Subscribe.max_fps`/`quality`, honoured per
+  viewer by the server). Measured on the 720p test pattern: 18.8 Mbit/s
+  native → 7 Mbit/s at 30 fps → 3 Mbit/s at 640x360. `misterkvms-cli stream
+  --max/--fps/--quality` shows what a connection gets.
 - **H.264** (C8): Media Foundation hardware encoder on Windows, `openh264`
   as fallback; no B-frames, short GOP, keyframe on request. `Subscribe`
   gains `max_bitrate` (optional, so old viewers are unaffected).
@@ -263,7 +293,7 @@ uptime).
 | I0 | Mac app check | Mac app builds and works without NDI (IPHONE-HANDOFF.md part 1) |
 | I1 | Core on iOS | `kvms-core` builds for device and simulator; `NativeSurface::UiKit`; XCFramework from `build-ios.sh` |
 | I2 | iPhone app on the LAN | hosts list, Bonjour + typed address, video, audio, touchpad, keyboard + function bar, remote, show/hide menu, control banner, three-finger switch; runs in the simulator against a real stream |
-| I3 | Pairing and secure transport | `mkvm` secure mode with tests; server `devices.json`, pairing, LAN-only plain, Devices on the setup page; core and phone use it |
+| I3 | Pairing and secure transport (done) | `mkvm` secure mode with tests; server `devices.json`, pairing, LAN-only plain, Devices on the setup page; core and phone use it |
 | I4 | H.264 (C8) | server encodes (Windows hardware + openh264), Apple decodes with VideoToolbox; bitrate cap; Auto quality |
 | I5 | Away from home | phone on cellular through a forwarded port: picture, sound, input; switching Wi-Fi ↔ cellular reconnects |
 | I6 | TestFlight | icon, privacy strings, export compliance answered, build uploaded |

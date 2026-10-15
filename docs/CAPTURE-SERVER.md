@@ -19,7 +19,7 @@ Decisions so far (October 2026):
 | R7 | **Local capture**: a client can read a card plugged into the same machine, through the same `capture` and `codec` crates as the server (§3). |
 | R8 | **Several viewers per stream**, one of them in control at a time (§7). Input goes through the server, which keeps the one mrext connection per MiSTer. |
 | R9 | Each card is its **own stream**, addressable and discoverable on its own, like an HDHomeRun tuner (§5.1). |
-| R10 | One optional password, for the setup page only, kept in plain text in `capture.ini` so it's easy to reset. Streams have no passwords. Security isn't a goal beyond that: this is a hobby tool on a LAN. |
+| R10 | One optional password, for the setup page only, kept in plain text in `capture.ini` so it's easy to reset. Streams have no passwords on the home network. From the internet (opt-in per capture PC), only paired devices get in, encrypted with a key of their own (IPHONE.md §2–3). |
 | R11 | Direct download first. Mac App Store, the OBS plugin and the Raspberry Pi capture box come later. |
 | R12 | Client UI/UX stays as it is on the Mac; only the host editor, a control indicator and the stats overlay change (§8.3). |
 | R13 | The protocol is called **mkvm** (crate `mkvm`, URLs `mkvm://`, mDNS `_mkvm._tcp`). |

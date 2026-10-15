@@ -126,7 +126,9 @@ if [[ "$DEVICE" == "1" ]]; then
   SIGN=(-allowProvisioningUpdates ${DEVELOPMENT_TEAM:+DEVELOPMENT_TEAM=$DEVELOPMENT_TEAM})
 else
   DEST="generic/platform=iOS Simulator"
-  SIGN=(CODE_SIGNING_ALLOWED=NO)
+  # Signed to run locally (ad hoc): unsigned simulator apps can't use the
+  # Keychain, where paired MiSTers' keys are kept.
+  SIGN=(CODE_SIGN_IDENTITY=- CODE_SIGN_STYLE=Manual DEVELOPMENT_TEAM=)
 fi
 xcb build "${PROJECT[@]}" -destination "$DEST" -derivedDataPath "$OUT/DerivedData" \
   "${VERSIONS[@]}" "${SIGN[@]}" build

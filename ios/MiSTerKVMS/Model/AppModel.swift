@@ -25,6 +25,12 @@ final class AppModel: ObservableObject {
         state = core.state()
         observer.model = self
         profiles = core.profiles()
+        // Paired MiSTers' keys, from the Keychain (the core never stores them).
+        for profile in profiles where profile.useInternet {
+            if let entry = DeviceKeychain.load(host: profile.id) {
+                core.setDeviceKey(id: profile.id, keyId: entry.keyId, key: entry.key)
+            }
+        }
         // Other viewers see this name ("iPhone has control"). The core falls
         // back to "MiSTerKVMS" where it can't read a computer name, as on iOS.
         if core.viewerName() == "MiSTerKVMS" {
@@ -76,7 +82,41 @@ final class AppModel: ObservableObject {
     // MARK: - Hosts
 
     func save(_ profile: HostProfile) { core.saveProfile(profile: profile) }
-    func delete(_ id: String) { core.deleteProfile(id: id) }
+
+    func delete(_ id: String) {
+        core.deleteProfile(id: id)
+        DeviceKeychain.delete(host: id)
+    }
+
+    // MARK: - Over the internet (docs/IPHONE.md §2–3)
+
+    /// This phone holds a key for the MiSTer's capture server.
+    func isPaired(_ profile: HostProfile) -> Bool { core.hasDeviceKey(id: profile.id) }
+
+    /// Pair with the MiSTer's capture server (the phone must be on its home
+    /// network) and keep the key in the Keychain. Throws the server's own
+    /// explanation, e.g. internet access turned off on the capture PC.
+    func pairForInternet(_ profile: HostProfile) async throws {
+        let core = self.core
+        let id = profile.id
+        let name = UIDevice.current.name
+        let result = try await Task.detached { try core.pairDevice(id: id, deviceName: name) }.value
+        guard DeviceKeychain.save(.init(keyId: result.keyId, key: result.key), host: id) else {
+            // Without the key saved, the next launch couldn't connect from outside.
+            core.forgetDeviceKey(id: id)
+            profiles = core.profiles()
+            throw ControllerError.Failed(message: "this iPhone couldn't save the key in its Keychain")
+        }
+        profiles = core.profiles()
+    }
+
+    /// Stop connecting from the internet and forget the key here. (The
+    /// capture PC's setup page can revoke it there too.)
+    func stopInternet(_ profile: HostProfile) {
+        core.forgetDeviceKey(id: profile.id)
+        DeviceKeychain.delete(host: profile.id)
+        profiles = core.profiles()
+    }
 
     func open(_ profile: HostProfile) {
         guard profile.id != state.profileId else { return }

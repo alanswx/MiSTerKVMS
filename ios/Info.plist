@@ -7,9 +7,10 @@
 	<array>
 		<string>_mkvm._tcp</string>
 	</array>
-	<!-- No encryption yet. The secure transport (IPHONE.md §3, milestone I3)
-	     changes this: then App Store Connect's export questions apply. -->
+	<!-- The app encrypts its connections from the internet itself (Noise:
+	     X25519, ChaCha20-Poly1305, BLAKE2s; IPHONE.md §3), not only through
+	     iOS. App Store Connect asks the export compliance questions for it. -->
 	<key>ITSAppUsesNonExemptEncryption</key>
-	<false/>
+	<true/>
 </dict>
 </plist>

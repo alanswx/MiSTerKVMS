@@ -169,7 +169,13 @@ fn serve(server: Arc<Server>, sock: TcpStream) -> Result<(), String> {
     let sock = Arc::new(sock);
     sock.set_read_timeout(Some(HELLO_TIMEOUT)).ok();
     let mut first = [0u8; 4];
-    Sock(sock.clone()).read_exact(&mut first).map_err(|e| e.to_string())?;
+    match Sock(sock.clone()).read_exact(&mut first) {
+        Ok(()) => {}
+        // Connected and left without a word: an address lookup (the iPhone
+        // resolving a stream it found) or a port check. Nothing to log.
+        Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => return Ok(()),
+        Err(e) => return Err(e.to_string()),
+    }
     // A paired device's encrypted connection, or a plain one.
     let (mut read, mut write, device): (Reader, Writer, Option<String>) = if &first == secure::MAGIC {
         let id = secure::read_prelude(&mut Sock(sock.clone())).map_err(|e| e.to_string())?;
