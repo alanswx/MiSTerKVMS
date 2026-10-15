@@ -1,15 +1,15 @@
 {
-  "default": "mister1",
+  "default": "ss1",
   "ssh_user": "root",
   "core_dest": "/media/fat/_Development",
   "type_delay_ms": 50,
   "type_hold_ms": 30,
   "machines": {
-    "mister1": {
+    "ss1": {
       "mister_host": "192.168.1.50",
-      "stream": "mkvm://capture-pc/MiSTer-1"
+      "stream": "mkvm://capture-pc/MiSTer-SS1"
     },
-    "mister2": {
+    "pi": {
       "mister_host": "192.168.1.51",
       "local": "UGREEN 25773",
       "type_delay_ms": 80

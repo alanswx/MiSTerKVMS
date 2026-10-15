@@ -1,5 +1,7 @@
 # Linux port plan
 
+> **Note:** NDI was removed in 1.0; video now comes from MiSTerKVMS Capture streams or a local capture card — see [CAPTURE-SERVER.md](CAPTURE-SERVER.md).
+
 Prerequisite: the shared groundwork in [PORTING.md](PORTING.md) §2.
 
 Targets: current GNOME and KDE on **Wayland** (primary), X11 sessions (secondary), x86_64 and aarch64 (e.g. Raspberry Pi 5). Distribution through **Flatpak** first.
@@ -62,7 +64,7 @@ Exit chord: Right-Super + Right-Alt + Esc. On many Linux layouts Right Alt is Al
 ## 4. Audio, NDI, recording
 
 - **Audio:** cpal → ALSA, which reaches PipeWire/PulseAudio through their ALSA plugins. Check the latency. If ALSA-on-PipeWire adds too much, use the `pipewire` crate directly (cpal has had PipeWire host work in progress).
-- **NDI:**
+- **NDI** (removed in 1.0; nothing to install now):
   - Users install the NDI SDK/runtime for Linux (`libndi.so.6`; distro packages exist, e.g. AUR `ndi-sdk`). Core loads it via `NDI_RUNTIME_DIR_V6` or the system path.
   - NDI discovery on Linux relies on **Avahi** (mDNS). Document `avahi-daemon` as a requirement and open UDP 5353 / TCP 5960+ on firewalled distros.
   - **aarch64:** NDI ships Linux aarch64 libraries, so a Raspberry Pi 5 is a viable thin client. Test performance with option (1) above.
@@ -79,7 +81,7 @@ Exit chord: Right-Super + Right-Alt + Esc. On many Linux layouts Right Alt is Al
 
 - **Flatpak (Flathub)**, primary:
   - Runtime: `org.gnome.Platform`. Permissions: `--share=network`, `--socket=wayland`, `--socket=fallback-x11`, `--socket=pulseaudio`, `--device=dri`.
-  - NDI: either bundle `libndi.so.6` (NDI's license allows redistribution inside the app, with the license text and kept up to date), or load it from an extension/host path. Bundling is friendlier.
+  - NDI (no longer applies): either bundle `libndi.so.6` (NDI's license allows redistribution inside the app, with the license text and kept up to date), or load it from an extension/host path. Bundling is friendlier.
   - mDNS works with host networking. Flatpak gives the app the host network namespace, but the Avahi socket may be needed: `--system-talk-name=org.freedesktop.Avahi`.
 - **AppImage**, secondary: one file, for people who don't use Flatpak.
 - **.deb/.rpm**: later, if asked for.

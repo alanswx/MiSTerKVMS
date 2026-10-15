@@ -1,12 +1,14 @@
 # MiSTerKVMS — Planning
 
+> **Note:** NDI was removed in 1.0; video now comes from MiSTerKVMS Capture streams or a local capture card — see [CAPTURE-SERVER.md](CAPTURE-SERVER.md). What follows is the original plan, built on NDI.
+
 A native desktop app (macOS first, cross-platform later) that works like a KVM for MiSTer FPGAs on the LAN:
 
 - **Input**: keyboard and mouse go to MiSTer through **mrext Remote** (`ws://<mister>:8182/api/ws`).
 - **Video + audio**: come from **OBS Studio** on a separate PC with the capture card(s), received over **NDI** (DistroAV plugin).
 - **Connections**: each saved host is a pair: a MiSTer IP, plus an OBS PC IP and NDI source name.
 
-Security is out of scope (LAN only: no auth, no TLS). OBS PC setup is in [SETUP-NDI.md](SETUP-NDI.md).
+Security is out of scope (LAN only: no auth, no TLS). OBS PC setup was in SETUP-NDI.md (removed with NDI).
 
 Status: **planning**. Nothing is built yet.
 
@@ -265,7 +267,7 @@ Resolved: Q-F → D14 (no required ini changes), Q-G → D15 (MIT), Q-H → D16 
 
 ## 9. Next steps
 
-1. **OBS PC**: install DistroAV and add an NDI filter to the HDMI-direct MiSTer source ([SETUP-NDI.md](SETUP-NDI.md)). Verify on the Mac with NDI Video Monitor.
+1. **OBS PC**: install DistroAV and add an NDI filter to the HDMI-direct MiSTer source. Verify on the Mac with NDI Video Monitor.
 2. Answer Q-I.
 3. **Spike 1 (input)**: Rust core with mrext WS + HID keymap, a minimal Swift shell with CGEventTap capture and the exit chord. Test on the MiSTer menu, the OSD (F12) and **HP9K715** on `<mister-ip>` (HP-UX/CDE: typing, 3-button mouse). Also test whether a sandboxed build can still block ⌘Tab (§2.2).
 4. **Spike 2 (video)**: NDI receive → wgpu render into a CAMetalLayer + cpal audio. Measure glass-to-glass latency by filming a stopwatch shown on the MiSTer and on the Mac.

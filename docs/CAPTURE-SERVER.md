@@ -14,7 +14,7 @@ Decisions so far (October 2026):
 | R2 | Our own protocol, MKVM. RustDesk was considered and dropped: AGPL and an unpublished protocol, for stock viewers we don't need now. |
 | R3 | The project stays **MIT** (D15). Codecs come from OS encoders and permissively licensed libraries only (§9). |
 | R4 | Resolution and codec are chosen **per viewer** (§6). |
-| R5 | NDI is **removed** once the capture server ships (C10); until then it stays as a legacy source. |
+| R5 | NDI is **removed** (done): no NDI code, runtime or SDK in the apps or the CLI. |
 | R6 | The client leak is fixed (25eecb5: uploads flushed when a frame isn't presented). What's left is a soak guard so it stays fixed (§2). |
 | R7 | **Local capture**: a client can read a card plugged into the same machine, through the same `capture` and `codec` crates as the server (§3). |
 | R8 | **Several viewers per stream**, one of them in control at a time (§7). Input goes through the server, which keeps the one mrext connection per MiSTer. |
@@ -56,7 +56,7 @@ clients' local capture and the CLI run the same code:
 | `codec/` | lib | JPEG decode (`zune-jpeg`) and encode (`turbojpeg`); H.264 encode/decode through the OS (Media Foundation, VideoToolbox, VA-API) and `openh264`; scaling (integer box, area) | server, core |
 | `mkvm/` | lib | protocol types, frame parser, client and server connection state machines, control token logic | server, core, CLI, later the OBS plugin |
 | `server/` | bin `misterkvms-capture` | streams, viewers, pipelines, mrext sessions, setup page, service install | — |
-| `core/` | lib (existing) | `FrameSource` trait with `MkvmSource`, `LocalSource`, `NdiSource` (legacy); controller, renderer, input | the three apps, CLI |
+| `core/` | lib (existing) | `FrameSource` trait with `MkvmSource`, `LocalSource`; controller, renderer, input | the three apps, CLI |
 
 The control token rules (§7) live in `mkvm` as a plain state machine with
 unit tests, so the server enforces them and the client shows the same state
@@ -312,8 +312,7 @@ In the client:
   entering capture mode; capture mode starts once control arrives.
 - Viewer names default to the computer's name, editable in settings.
 
-Local capture (§3) and legacy NDI hosts talk to mrext directly and have no
-token.
+Local capture (§3) talks to mrext directly and has no token.
 
 ## 8. Client side
 
@@ -323,8 +322,9 @@ token.
   - `{ kind: "capture", stream: "mkvm://pc:5970/MiSTer-SS1" }`: the MiSTer
     address comes from the stream, so it doesn't need entering;
   - `{ kind: "local", video_device, audio_device, mister_host }`;
-  - legacy `{ kind: "ndi", ... }` until R5, then the app offers to switch
-    each NDI host to a discovered stream.
+  - saved NDI hosts from before R5 become capture hosts: when one is
+    opened, the app finds the stream that shows the same MiSTer address and
+    saves it.
 - Decoding happens in the receive thread into the existing frame slot, so
   the renderer, auto-crop, predictive cursor, recording and stats stay as
   they are.
@@ -343,7 +343,7 @@ home is not in v1 (§11).
 Unchanged: sidebar, video view, capture mode and exit chord, cursor,
 scaling, crop, recording. Changed:
 
-- **Host editor:** the "OBS PC + NDI source" fields become a source picker
+- **Host editor:** the old "OBS PC + NDI source" fields became a source picker
   (streams found on the network / capture card on this computer / address)
   plus Quality.
 - **Toolbar:** the control indicator (§7), shown only for server streams.
@@ -376,7 +376,7 @@ scaling, crop, recording. Changed:
 | C7 | `MkvmSource` + client UI | host editor source picker, control indicator, quality menu in all three apps |
 | C8 | H.264 + per-viewer quality | hardware encode on Windows, decode in all three apps, Auto mode, shared pipelines |
 | C9 | Server on macOS and Linux | background agent / systemd; signed app bundle; packages |
-| C10 | Release; NDI removed | server and apps in releases; NDI code, SETUP-NDI and release notes removed; profiles migrate |
+| C10 | Release (1.0); NDI removed | server and apps in releases; NDI code, SETUP-NDI and release notes removed; profiles migrate |
 | Later | OBS plugin, Raspberry Pi capture box, QUIC + away from home, Mac App Store build | |
 
 Status (14 October 2026): **C3** done on Windows (both cards, video and
@@ -385,7 +385,10 @@ making sound). **C5**: the service is in, set up from the page.
 **C6**: the setup page does streams, previews, the service, LAN access,
 the password and the test pattern; the tray icon and the installer are
 still to do. Recording from streams and local cards works in the apps'
-recorder and `misterkvms-cli record --stream/--local`.
+recorder and `misterkvms-cli record --stream/--local`. **C10** in part:
+NDI is gone (R5): its code, SETUP-NDI and the NDI release notes are
+removed, and saved NDI hosts migrate by MiSTer address (§8.1). The 1.0
+release itself is still to come.
 
 Rough size: C0–C4 about two weeks; C5–C7 about two weeks; C8–C10 about two
 more. The biggest risks are C3 (cards, and capture from a Windows service)
@@ -396,9 +399,9 @@ and C8 (hardware codecs on three OSes).
 - **Capture from a Windows service:** video and especially audio capture in
   session 0 may be blocked by privacy settings or driver behaviour; the
   fallback is a login-time background process (§5.3).
-- **Latency vs NDI:** MJPEG should match or beat NDI (both intra-frame);
-  input through the server adds one LAN hop (well under a millisecond).
-  Measure end to end in C4/C5.
+- **Latency:** MJPEG should match or beat the NDI it replaces (both
+  intra-frame); input through the server adds one LAN hop (well under a
+  millisecond). Measure end to end in C4/C5.
 - **USB bandwidth:** two USB capture sticks on one controller may not both
   run 1080p60; the setup page should warn.
 - **macOS capture box:** Camera permission, auto-login for headless use,

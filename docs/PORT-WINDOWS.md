@@ -1,5 +1,7 @@
 # Windows port plan
 
+> **Note:** NDI was removed in 1.0; video now comes from MiSTerKVMS Capture streams or a local capture card — see [CAPTURE-SERVER.md](CAPTURE-SERVER.md).
+
 Prerequisite: the shared groundwork in [PORTING.md](PORTING.md) §2 (profiles and controller in core, multi-platform surface creation, fallback recorder).
 
 Target: Windows 10 22H2 and Windows 11, x64 first, ARM64 second.
@@ -12,7 +14,7 @@ W0–W5 and W7 (unsigned) are done; the app is in `windows/`, built by `scripts/
 - **Video surface:** neither a child HWND nor a SwapChainPanel. The core creates a DirectComposition surface handle; wgpu builds its swap chain on it (`NativeSurface::CompositionHandle`), and the shell wraps the handle with `ICompositorSwapChainInterop::CreateCompositionSurfaceForHandle` in a brush on a XAML visual. No airspace problem, so the stats overlay, capture hint and dialogs stay in XAML; no UI-thread swap-chain calls, and DPI is handled by sizing the swap chain in pixels.
 - **Input capture lives in the core** (`core/src/win/capture.rs`), on its own thread: low-level keyboard + mouse hooks (both swallowed), Raw Input for raw mode, the pointer parked and hidden under a 1-pixel window of ours, AltGr's fake Left Ctrl dropped (scan code 0x21D or same timestamp), and it ends on the chord, focus loss or disconnect. Accelerated movement is divided by the display scale, so it's in points like on macOS.
 - **Recording (W6):** the core's ffmpeg recorder (`core/src/video/ffmpeg.rs`) rather than Media Foundation; needs ffmpeg on the PATH or next to the app.
-- **Packaging:** a self-contained zip (WinUI component packages only, ~70 MB). MSIX, signing and winget are still to do; so is ARM64 (check NDI's ARM64 runtime first).
+- **Packaging:** a self-contained zip (WinUI component packages only, ~70 MB). MSIX, signing and winget are still to do; so is ARM64.
 
 Still to verify by hand: an AltGr layout, Raw Input on a high-DPI mouse, mixed-DPI monitors, an 8-hour soak (§8).
 
@@ -73,7 +75,7 @@ UIPI note: the hook doesn't see input when an elevated window has focus. That's 
 ## 4. Audio, NDI, recording
 
 - **Audio:** cpal WASAPI shared mode works as is. Test latency (WASAPI shared adds ~10–20 ms). Consider exclusive/low-latency mode later.
-- **NDI:** users install the **NDI Runtime** (or NDI Tools). Core finds `Processing.NDI.Lib.x64.dll` via `NDI_RUNTIME_DIR_V6`. NDI licensing allows bundling the runtime DLL in our installer: the NDI redistributable, kept up to date, with the license text. Decide at packaging time; bundling is friendlier.
+- **NDI** (removed in 1.0; nothing to install now): users installed the **NDI Runtime** (or NDI Tools). Core finds `Processing.NDI.Lib.x64.dll` via `NDI_RUNTIME_DIR_V6`. NDI licensing allows bundling the runtime DLL in our installer: the NDI redistributable, kept up to date, with the license text. Decide at packaging time; bundling is friendlier.
   - ARM64: check that NDI 6 ships a Windows ARM64 runtime. If not, the ARM64 build is CLI/input-only, or runs as x64 under emulation.
   - Firewall: the first NDI receive prompts Windows Firewall for private networks. Document it.
 - **Recording:** Media Foundation `IMFSinkWriter` (H.264 + AAC, hardware MFTs on NVIDIA/AMD/Intel), implemented in Rust (`windows` crate) behind `MediaSink`. Inputs are BGRA → NV12, converted by the MF video processor MFT, or by a compute pass in wgpu before readback. Fallback: core's ffmpeg sink (PORTING §2.4).
