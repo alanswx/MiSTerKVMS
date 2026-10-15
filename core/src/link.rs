@@ -2,18 +2,23 @@
 //! protocol). One link carries a host's video, audio and input for as long
 //! as the host is open; it reconnects by itself. The video session and the
 //! input session both use it (docs/CAPTURE-SERVER.md §4, §7).
+//!
+//! A paired device connects encrypted with its key (mkvm::secure), at home
+//! or, when home doesn't answer, at the server's internet address; from the
+//! internet it asks for fewer, lighter pictures (docs/IPHONE.md §3–4).
 
 use std::collections::HashMap;
-use std::io::BufReader;
+use std::io::{BufReader, Read, Write};
 use std::net::{Shutdown, TcpStream, ToSocketAddrs};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use mkvm::secure::{self, DeviceKey, SecureReader, SecureWriter};
 use mkvm::{
-    read_message, write_message, Audio, Codec, ControlState, Hello, InputCmd, Message, MisterState, StreamAddress, Subscribe, Video,
-    Welcome,
+    read_message, write_message, Audio, Codec, ControlState, Hello, InputCmd, Message, MisterState, Pair, Paired, StreamAddress,
+    Subscribe, Video, Welcome,
 };
 
 use crate::log;
@@ -24,6 +29,18 @@ const RECONNECT_DELAY: Duration = Duration::from_secs(2);
 const PING_EVERY: Duration = Duration::from_secs(2);
 /// No message for this long: the server is gone even if TCP hasn't noticed.
 const SILENT_LIMIT: Duration = Duration::from_secs(8);
+/// With an internet address to fall back on, the other route gets this long.
+const FIRST_TRY_TIMEOUT: Duration = Duration::from_millis(1500);
+/// From the internet a viewer asks for at most this, unless it asked for less.
+const INTERNET_FPS: f64 = 30.0;
+const INTERNET_QUALITY: u8 = 70;
+
+/// A paired device's key, and where the server is reached from the internet.
+#[derive(Debug, Clone)]
+pub struct Remote {
+    pub key: DeviceKey,
+    pub internet: Option<StreamAddress>,
+}
 
 /// Receives a stream's pictures and sound (the video session). Called on
 /// the link's reader thread; timestamps are already on this machine's clock.
@@ -50,11 +67,17 @@ pub struct StreamState {
     /// Who does, when someone else does (empty if nobody).
     pub holder: String,
     pub round_trip_ms: f64,
+    /// Connected from the internet (encrypted), not at home.
+    pub internet: bool,
 }
 
 #[derive(Default)]
 struct State {
     connected: bool,
+    /// The connection goes through the internet address.
+    internet: bool,
+    /// The route that worked last, tried first next time.
+    prefer_internet: bool,
     error: String,
     welcome: Option<Welcome>,
     control: Option<ControlState>,
@@ -70,7 +93,9 @@ pub struct MkvmLink {
     viewer: String,
     stop: AtomicBool,
     state: Mutex<State>,
-    writer: Mutex<Option<TcpStream>>,
+    remote: Option<Remote>,
+    /// The open connection: where messages are written, and its socket.
+    conn: Mutex<Option<Conn>>,
     subscription: Mutex<Subscribe>,
     media: Mutex<Option<Arc<dyn LinkMedia>>>,
     observer: Mutex<Option<Arc<dyn SessionObserver>>>,
@@ -80,12 +105,19 @@ impl MkvmLink {
     /// Start connecting to `address` (`mkvm://host/stream`). `viewer` is the
     /// name other viewers see.
     pub fn connect(address: StreamAddress, viewer: String) -> Arc<Self> {
+        Self::connect_with(address, viewer, None)
+    }
+
+    /// Like `connect`, as a paired device: encrypted, and from the internet
+    /// when home doesn't answer.
+    pub fn connect_with(address: StreamAddress, viewer: String, remote: Option<Remote>) -> Arc<Self> {
         let link = Arc::new(Self {
             address,
             viewer,
             stop: AtomicBool::new(false),
             state: Mutex::new(State::default()),
-            writer: Mutex::new(None),
+            remote,
+            conn: Mutex::new(None),
             subscription: Mutex::new(Subscribe { video: false, audio: false, ..Default::default() }),
             media: Mutex::new(None),
             observer: Mutex::new(None),
@@ -105,8 +137,8 @@ impl MkvmLink {
 
     pub fn close(&self) {
         self.stop.store(true, Ordering::Relaxed);
-        if let Some(w) = self.writer.lock().unwrap().take() {
-            let _ = w.shutdown(Shutdown::Both);
+        if let Some(c) = self.conn.lock().unwrap().take() {
+            let _ = c.sock.shutdown(Shutdown::Both);
         }
     }
 
@@ -121,6 +153,7 @@ impl MkvmLink {
             have_control: control.as_ref().is_some_and(|c| c.you),
             holder: control.and_then(|c| if c.you { None } else { c.holder.map(|h| h.name) }).unwrap_or_default(),
             round_trip_ms: s.round_trip_ms,
+            internet: s.connected && s.internet,
         }
     }
 
@@ -128,23 +161,37 @@ impl MkvmLink {
     pub(crate) fn set_media(&self, media: Option<Arc<dyn LinkMedia>>) {
         let on = media.is_some();
         *self.media.lock().unwrap() = media;
-        let mut sub = self.subscription.lock().unwrap();
-        sub.video = on;
-        sub.audio = on;
-        let sub = sub.clone();
-        self.send(&Message::Subscribe(sub));
+        let sub = {
+            let mut sub = self.subscription.lock().unwrap();
+            sub.video = on;
+            sub.audio = on;
+            sub.clone()
+        };
+        self.send(&Message::Subscribe(self.effective(sub)));
     }
 
     /// Ask for at most this picture size (None: native), this many pictures
     /// a second and this JPEG quality (None: the server's).
     pub fn set_limits(&self, max_width: Option<u32>, max_height: Option<u32>, max_fps: Option<f64>, quality: Option<u8>) {
-        let mut sub = self.subscription.lock().unwrap();
-        sub.max_width = max_width;
-        sub.max_height = max_height;
-        sub.max_fps = max_fps;
-        sub.quality = quality;
-        let sub = sub.clone();
-        self.send(&Message::Subscribe(sub));
+        let sub = {
+            let mut sub = self.subscription.lock().unwrap();
+            sub.max_width = max_width;
+            sub.max_height = max_height;
+            sub.max_fps = max_fps;
+            sub.quality = quality;
+            sub.clone()
+        };
+        self.send(&Message::Subscribe(self.effective(sub)));
+    }
+
+    /// What to ask for on this connection: from the internet, at most
+    /// INTERNET_FPS pictures at INTERNET_QUALITY.
+    fn effective(&self, mut sub: Subscribe) -> Subscribe {
+        if self.state.lock().unwrap().internet {
+            sub.max_fps = Some(sub.max_fps.map_or(INTERNET_FPS, |f| f.min(INTERNET_FPS)));
+            sub.quality = Some(sub.quality.map_or(INTERNET_QUALITY, |q| q.min(INTERNET_QUALITY)));
+        }
+        sub
     }
 
     /// Who hears about the connection and MiSTer status (the input session's
@@ -193,12 +240,12 @@ impl MkvmLink {
     }
 
     fn send(&self, msg: &Message) -> bool {
-        let mut w = self.writer.lock().unwrap();
-        let Some(stream) = w.as_mut() else { return false };
-        if let Err(e) = write_message(stream, msg, mkvm_now()) {
+        let mut c = self.conn.lock().unwrap();
+        let Some(conn) = c.as_mut() else { return false };
+        if let Err(e) = write_message(&mut conn.write, msg, mkvm_now()) {
             log(&format!("mkvm: send failed: {e}"));
-            let _ = stream.shutdown(Shutdown::Both);
-            *w = None;
+            let _ = conn.sock.shutdown(Shutdown::Both);
+            *c = None;
             return false;
         }
         true
@@ -242,7 +289,7 @@ fn run(weak: std::sync::Weak<MkvmLink>) {
                 Err(e) => e.clone(),
             };
         }
-        *link.writer.lock().unwrap() = None;
+        *link.conn.lock().unwrap() = None;
         if link.stop.load(Ordering::Relaxed) {
             return;
         }
@@ -254,19 +301,68 @@ fn run(weak: std::sync::Weak<MkvmLink>) {
     }
 }
 
-/// One connection, from connect to close.
-fn session(link: &Arc<MkvmLink>) -> Result<(), String> {
-    let addr = link
-        .address
+struct Conn {
+    write: Box<dyn Write + Send>,
+    sock: TcpStream,
+}
+
+fn tcp(address: &StreamAddress, timeout: Duration) -> Result<TcpStream, String> {
+    let addr = address
         .socket()
         .to_socket_addrs()
-        .map_err(|e| format!("can't find {}: {e}", link.address.host))?
+        .map_err(|e| format!("can't find {}: {e}", address.host))?
         .next()
-        .ok_or_else(|| format!("can't find {}", link.address.host))?;
-    let stream = TcpStream::connect_timeout(&addr, CONNECT_TIMEOUT).map_err(|e| format!("can't reach the capture server: {e}"))?;
-    stream.set_nodelay(true).ok();
-    stream.set_read_timeout(Some(SILENT_LIMIT)).ok();
-    let mut write = stream.try_clone().map_err(|e| e.to_string())?;
+        .ok_or_else(|| format!("can't find {}", address.host))?;
+    TcpStream::connect_timeout(&addr, timeout).map_err(|e| format!("can't reach the capture server at {}: {e}", address.host))
+}
+
+/// Connect at home or from the internet, the route that worked last first.
+/// Returns the socket and whether it goes through the internet.
+fn open(link: &MkvmLink) -> Result<(TcpStream, bool), String> {
+    let Some(internet) = link.remote.as_ref().and_then(|r| r.internet.clone()) else {
+        return tcp(&link.address, CONNECT_TIMEOUT).map(|s| (s, false));
+    };
+    let mut routes = [(link.address.clone(), false), (internet, true)];
+    if link.state.lock().unwrap().prefer_internet {
+        routes.reverse();
+    }
+    let mut errors = Vec::new();
+    for (i, (address, internet)) in routes.into_iter().enumerate() {
+        match tcp(&address, if i == 0 { FIRST_TRY_TIMEOUT } else { CONNECT_TIMEOUT }) {
+            Ok(s) => return Ok((s, internet)),
+            Err(e) => errors.push(format!("{}: {e}", if internet { "from the internet" } else { "at home" })),
+        }
+    }
+    Err(errors.join("; "))
+}
+
+/// Ask a capture server on the home network for a device key, to connect
+/// from the internet with later (docs/IPHONE.md §2).
+pub fn pair(address: &StreamAddress, device: &str) -> Result<Paired, String> {
+    let sock = tcp(address, CONNECT_TIMEOUT)?;
+    sock.set_read_timeout(Some(Duration::from_secs(10))).ok();
+    let mut write = sock.try_clone().map_err(|e| e.to_string())?;
+    write_message(&mut write, &Message::Pair(Pair { device: device.to_string() }), mkvm_now()).map_err(|e| e.to_string())?;
+    match read_message(&mut BufReader::new(sock)).map_err(|e| e.to_string())?.0 {
+        Message::Paired(p) => Ok(p),
+        Message::Error(e) => Err(e.message),
+        other => Err(format!("unexpected answer {other:?}")),
+    }
+}
+
+/// One connection, from connect to close.
+fn session(link: &Arc<MkvmLink>) -> Result<(), String> {
+    let (sock, internet) = open(link)?;
+    sock.set_nodelay(true).ok();
+    sock.set_read_timeout(Some(SILENT_LIMIT)).ok();
+    let clone = || sock.try_clone().map_err(|e| e.to_string());
+    let (read, mut write): (Box<dyn Read + Send>, Box<dyn Write + Send>) = match &link.remote {
+        Some(remote) => {
+            let session = secure::connect(&mut clone()?, &remote.key).map_err(|e| e.to_string())?;
+            (Box::new(SecureReader::new(clone()?, session.clone())), Box::new(SecureWriter::new(clone()?, session)))
+        }
+        None => (Box::new(clone()?), Box::new(clone()?)),
+    };
     let hello = Message::Hello(Hello {
         protocol: mkvm::PROTOCOL_VERSION,
         stream: link.address.stream.clone(),
@@ -275,18 +371,32 @@ fn session(link: &Arc<MkvmLink>) -> Result<(), String> {
         codecs: vec![Codec::Jpeg],
     });
     write_message(&mut write, &hello, mkvm_now()).map_err(|e| e.to_string())?;
-    let mut read = BufReader::with_capacity(256 * 1024, stream);
+    let mut read = BufReader::with_capacity(256 * 1024, read);
     let welcome = match read_message(&mut read).map_err(|e| e.to_string())?.0 {
         Message::Welcome(w) => w,
         Message::Error(e) => return Err(e.message),
         other => return Err(format!("unexpected {other:?}")),
     };
     log(&format!(
-        "mkvm: {} connected ({} {}x{}, MiSTer {:?})",
-        link.address, welcome.server, welcome.stream.width, welcome.stream.height, welcome.stream.mister
+        "mkvm: {} connected{} ({} {}x{}, MiSTer {:?})",
+        link.address,
+        match (internet, link.remote.is_some()) {
+            (true, _) => " from the internet, encrypted",
+            (false, true) => ", encrypted",
+            _ => "",
+        },
+        welcome.server,
+        welcome.stream.width,
+        welcome.stream.height,
+        welcome.stream.mister
     ));
+    {
+        let mut s = link.state.lock().unwrap();
+        s.internet = internet;
+        s.prefer_internet = internet;
+    }
     let sub = link.subscription.lock().unwrap().clone();
-    write_message(&mut write, &Message::Subscribe(sub), mkvm_now()).map_err(|e| e.to_string())?;
+    write_message(&mut write, &Message::Subscribe(link.effective(sub)), mkvm_now()).map_err(|e| e.to_string())?;
     {
         let mut s = link.state.lock().unwrap();
         s.connected = true;
@@ -294,7 +404,7 @@ fn session(link: &Arc<MkvmLink>) -> Result<(), String> {
         s.welcome = Some(welcome);
         s.status.clear();
     }
-    *link.writer.lock().unwrap() = Some(write);
+    *link.conn.lock().unwrap() = Some(Conn { write, sock });
     link.notify_state();
     link.media_state("connected");
 

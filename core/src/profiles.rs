@@ -53,6 +53,13 @@ pub struct HostProfile {
     /// What the predictive cursor learned last time (0 = not yet).
     pub cursor_lag_ms: f64,
     pub cursor_gain: f64,
+    /// Capture server streams: also connect from the internet, encrypted
+    /// with this device's key (kept by the shell, e.g. the iPhone Keychain,
+    /// never in this file). docs/IPHONE.md §2–3.
+    pub use_internet: bool,
+    /// How the capture server is reached from the internet ("host:port"),
+    /// as the server handed it over when pairing; the user may change it.
+    pub internet_address: String,
 }
 
 impl Default for HostProfile {
@@ -76,6 +83,8 @@ impl Default for HostProfile {
             predictive_cursor: true,
             cursor_lag_ms: 0.0,
             cursor_gain: 0.0,
+            use_internet: false,
+            internet_address: String::new(),
         }
     }
 }

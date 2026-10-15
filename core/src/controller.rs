@@ -5,6 +5,7 @@
 //! A shell renders `state()` and forwards input. It's told about changes
 //! through `ControllerObserver`, called from background threads.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, Weak};
 use std::thread;
@@ -210,8 +211,20 @@ struct Inner {
     observer: Arc<dyn ControllerObserver>,
     store: ProfileStore,
     state: Mutex<State>,
+    /// Paired hosts' device keys, by host id: handed over by the shell (the
+    /// iPhone Keychain), never written to the settings file.
+    device_keys: Mutex<HashMap<String, mkvm::secure::DeviceKey>>,
     #[cfg(windows)]
     win_capture: Mutex<Option<crate::win::capture::WinCapture>>,
+}
+
+/// What pairing returns: the key for the shell to keep safe (Keychain), and
+/// where the capture server is reached from the internet.
+#[derive(Debug, Clone, PartialEq, uniffi::Record)]
+pub struct PairResult {
+    pub key_id: String,
+    pub key: String,
+    pub internet_address: String,
 }
 
 #[derive(uniffi::Object)]
@@ -429,6 +442,54 @@ impl Controller {
             limits.apply(&link, &HostProfile { quality, ..Default::default() });
         }
         self.inner.notify(ControllerEvent::Changed);
+    }
+
+    /// Pair this device with a host's capture server, on the home network,
+    /// to connect from the internet too (docs/IPHONE.md §2): the server
+    /// issues a key, which this returns for the shell to keep (Keychain) and
+    /// hand back with `set_device_key` on later starts. The host's "use over
+    /// the internet" and internet address are saved, and an open host
+    /// reconnects encrypted. Blocks up to ~10 s: call it off the main thread.
+    pub fn pair_device(&self, id: String, device_name: String) -> Result<PairResult, ControllerError> {
+        let failed = |message: String| ControllerError::Failed { message };
+        let profile = self.inner.store.get(&id).ok_or_else(|| failed("no such host".into()))?;
+        let address = mkvm::StreamAddress::parse(&profile.stream).map_err(failed)?;
+        let paired = crate::link::pair(&address, &device_name).map_err(failed)?;
+        let key = mkvm::secure::DeviceKey::from_hex(&paired.key_id, &paired.key).ok_or_else(|| failed("the server sent a malformed key".into()))?;
+        self.inner.device_keys.lock().unwrap().insert(id.clone(), key);
+        let server_address = paired.internet_address.trim().to_string();
+        self.inner.store.update(&id, |p| {
+            p.use_internet = true;
+            if !server_address.is_empty() {
+                p.internet_address = server_address.clone();
+            }
+        });
+        log(&format!("host: '{}' paired for the internet ({})", profile.name, paired.key_id));
+        self.reopen_if_open(&id);
+        self.inner.notify(ControllerEvent::ProfilesChanged);
+        Ok(PairResult { key_id: paired.key_id, key: paired.key, internet_address: paired.internet_address })
+    }
+
+    /// A paired host's device key, from where the shell keeps it. Ignored
+    /// if malformed.
+    pub fn set_device_key(&self, id: String, key_id: String, key: String) {
+        if let Some(key) = mkvm::secure::DeviceKey::from_hex(&key_id, &key) {
+            self.inner.device_keys.lock().unwrap().insert(id, key);
+        }
+    }
+
+    /// Stop using the internet for a host and forget its key here (the
+    /// server keeps it until revoked on its setup page).
+    pub fn forget_device_key(&self, id: String) {
+        self.inner.device_keys.lock().unwrap().remove(&id);
+        self.inner.store.update(&id, |p| p.use_internet = false);
+        self.reopen_if_open(&id);
+        self.inner.notify(ControllerEvent::ProfilesChanged);
+    }
+
+    /// Whether this device holds a key for the host.
+    pub fn has_device_key(&self, id: String) -> bool {
+        self.inner.device_keys.lock().unwrap().contains_key(&id)
     }
 
     /// This viewer's own limits for capture server streams (a phone: its
@@ -730,12 +791,21 @@ impl Controller {
         self.inner.state.lock().unwrap().frames = frames;
     }
 
+    /// Reconnect a host that's open, e.g. after its key changed.
+    fn reopen_if_open(&self, id: &str) {
+        if self.open_profile_id().as_deref() == Some(id) {
+            self.close();
+            self.open(id.to_string());
+        }
+    }
+
     fn with_store(store: ProfileStore, observer: Arc<dyn ControllerObserver>) -> Arc<Self> {
         let inner = Arc::new_cyclic(|me| Inner {
             me: me.clone(),
             observer,
             store,
             state: Mutex::new(State::default()),
+            device_keys: Mutex::new(HashMap::new()),
             #[cfg(windows)]
             win_capture: Mutex::new(None),
         });
@@ -964,10 +1034,26 @@ impl Inner {
 
     /// Connect a capture server stream host (the state's generation is the
     /// observer's).
+    /// A paired host's way in: its device key, and the internet address
+    /// (with the same stream) when one is set.
+    fn remote_for(&self, profile: &HostProfile, home: &mkvm::StreamAddress) -> Option<crate::link::Remote> {
+        if !profile.use_internet {
+            return None;
+        }
+        let key = self.device_keys.lock().unwrap().get(&profile.id).cloned()?;
+        let internet = profile.internet_address.trim();
+        let internet = (!internet.is_empty())
+            .then(|| mkvm::StreamAddress::parse(&format!("mkvm://{internet}/x")).ok())
+            .flatten()
+            .map(|a| mkvm::StreamAddress { stream: home.stream.clone(), ..a });
+        Some(crate::link::Remote { key, internet })
+    }
+
     fn connect_capture(&self, s: &mut State, profile: &HostProfile, viewer: String, observer: Arc<Observer>) {
         match mkvm::StreamAddress::parse(&profile.stream) {
             Ok(address) => {
-                let link = MkvmLink::connect(address, viewer);
+                let remote = self.remote_for(profile, &address);
+                let link = MkvmLink::connect_with(address, viewer, remote);
                 s.limits.apply(&link, profile);
                 let session = MisterSession::with_link(link.clone(), observer);
                 session.set_settings(profile.input_settings());
