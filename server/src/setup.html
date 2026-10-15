@@ -488,7 +488,7 @@ function renderService() {
     status = `<span class="warn"><span class="dot warn"></span>Running in this window: closing it stops the streams.</span>`;
     hint = "Install it as a Windows service to keep the streams running, also after a restart, without logging in. The program is copied to Program Files and Windows asks for permission; this window then hands over and closes.";
   }
-  if (!s.local) hint = "This can only be changed on the capture PC itself.";
+  if (!s.local) hint = "Installing, starting, stopping and removing the service only work on the capture PC itself; updating works from here too.";
   $("svcStatus").innerHTML = status;
   $("svcHint").innerHTML = hint;
   show("svcInstall", !s.installed);
@@ -563,7 +563,7 @@ $("updCheck").onclick = async () => {
     const notes = update.page ? ` <a href="${esc(update.page)}" target="_blank" rel="noopener">What's new</a>` : "";
     if (!update.newer) {
       $("updNote").innerHTML = `Up to date (${esc(update.current)}).`;
-    } else if (update.canApply && service && service.local) {
+    } else if (update.canApply) {
       $("updApply").hidden = false;
       $("updApply").textContent = `Update to ${update.latest}`;
       $("updNote").innerHTML = `${esc(update.latest)} is out; this is ${esc(update.current)}.${notes}`;

@@ -89,10 +89,11 @@ fn handle(server: Arc<Server>, mut request: Request) {
             Err(e) => error(502, &e),
         },
         (Method::Post, "/api/update") => {
+            // From any computer that may open the page: an update can only
+            // install the project's latest release, checked against GitHub's
+            // SHA-256 (unlike stopping or removing the service).
             if !authorised {
                 error(403, "wrong password")
-            } else if !is_local(peer) {
-                error(403, "updates can only be started on the capture PC itself")
             } else {
                 match update::apply(server.dir()) {
                     Ok(v) => json_response(json!({ "ok": true, "version": v })),

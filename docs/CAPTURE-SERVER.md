@@ -234,7 +234,9 @@ One TCP connection per viewer per stream, `TCP_NODELAY`. No TLS on the LAN.
   settings), wherever the page is opened from. Both live in `capture.ini`
   (§5.6): `[setup] allow_lan = false` and `password =`. Forgot the password?
   Delete the line in `capture.ini` and restart. LAN access and the service
-  can only be changed from the capture PC itself.
+  can only be changed from the capture PC itself, except *Update*, which
+  works from any computer allowed to open the page (it can only install
+  the latest release, checked against GitHub's SHA-256).
 - **Test pattern:** "Show a test pattern" (`[setup] test_pattern`) adds a
   card with moving rainbow bars and a beep every second (its own card
   audio), to try streams, viewers, sound and recording without a MiSTer.
