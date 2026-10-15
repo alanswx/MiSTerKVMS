@@ -1,16 +1,25 @@
 #!/usr/bin/env bash
 # Build the iPhone app: Rust core (device + simulator) → KVMSCore.xcframework
 # → Swift bindings → xcodebuild.
-# Usage: scripts/build-ios.sh [--core-only] [--device]
-#   --core-only  stop after the XCFramework and bindings (then build in Xcode:
-#                open ios/MiSTerKVMS.xcodeproj)
-#   --device     build for a real iPhone (needs DEVELOPMENT_TEAM, or a team
-#                picked in Xcode); default: the simulator
+# Usage: scripts/build-ios.sh [--core-only] [--device] [--testflight]
+#   --core-only   stop after the XCFramework and bindings (then build in Xcode:
+#                 open ios/MiSTerKVMS.xcodeproj)
+#   --device      build for a real iPhone (needs DEVELOPMENT_TEAM, or a team
+#                 picked in Xcode); default: the simulator
+#   --testflight  archive, sign and upload to App Store Connect (TestFlight);
+#                 needs DEVELOPMENT_TEAM and the ASC_* key below
 #
 # Env:
 #   DEVELOPMENT_TEAM  Apple team id for signing device builds.
 #   VERSION           CFBundleShortVersionString (default: from Cargo.toml).
-#   BUILD_NUMBER      CFBundleVersion (default: git commit count).
+#   BUILD_NUMBER      CFBundleVersion (default: git commit count); must grow
+#                     with every TestFlight upload.
+#   ASC_KEY_PATH, ASC_KEY_ID, ASC_ISSUER_ID
+#                     App Store Connect API key (.p8 file, its id, the issuer
+#                     id). Xcode signs in the cloud with it, so no certificate
+#                     or profile has to be installed; the key needs the Admin
+#                     role (or access to cloud-managed distribution
+#                     certificates).
 set -euo pipefail
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
@@ -19,11 +28,12 @@ BUILD_NUMBER=${BUILD_NUMBER:-$(git -C "$ROOT" rev-list --count HEAD 2>/dev/null 
 OUT="$ROOT/build/ios"
 cd "$ROOT"
 
-CORE_ONLY=0; DEVICE=0
+CORE_ONLY=0; DEVICE=0; TESTFLIGHT=0
 for arg in "$@"; do
   case "$arg" in
     --core-only) CORE_ONLY=1 ;;
     --device) DEVICE=1 ;;
+    --testflight) TESTFLIGHT=1 ;;
     *) echo "unknown option $arg" >&2; exit 2 ;;
   esac
 done
@@ -58,6 +68,50 @@ xcodebuild -create-xcframework \
 
 [[ "$CORE_ONLY" == "1" ]] && { echo "Done: $OUT/KVMSCore.xcframework"; exit 0; }
 
+# xcodebuild's full output goes to a log; errors and warnings are shown.
+xcb() {
+  local log="$OUT/xcodebuild-$1.log"; shift
+  if ! xcodebuild "$@" > "$log" 2>&1; then
+    grep -E "error:|warning: |ERROR|BUILD FAILED|EXPORT FAILED" "$log" | tail -40
+    echo "xcodebuild failed; full log: $log" >&2
+    exit 1
+  fi
+  grep -E "warning: " "$log" | grep -v appintentsmetadataprocessor | sort -u | head -20 || true
+}
+PROJECT=(-project ios/MiSTerKVMS.xcodeproj -scheme MiSTerKVMS -configuration Release)
+VERSIONS=(MARKETING_VERSION="$VERSION" CURRENT_PROJECT_VERSION="$BUILD_NUMBER")
+
+if [[ "$TESTFLIGHT" == "1" ]]; then
+  : "${DEVELOPMENT_TEAM:?set DEVELOPMENT_TEAM}" "${ASC_KEY_PATH:?set ASC_KEY_PATH}"
+  : "${ASC_KEY_ID:?set ASC_KEY_ID}" "${ASC_ISSUER_ID:?set ASC_ISSUER_ID}"
+  AUTH=(-allowProvisioningUpdates -authenticationKeyPath "$ASC_KEY_PATH"
+        -authenticationKeyID "$ASC_KEY_ID" -authenticationKeyIssuerID "$ASC_ISSUER_ID")
+  echo "==> Archive (team $DEVELOPMENT_TEAM)"
+  rm -rf "$OUT/MiSTerKVMS.xcarchive" "$OUT/export"
+  xcb archive "${PROJECT[@]}" -destination "generic/platform=iOS" -derivedDataPath "$OUT/DerivedData" \
+    -archivePath "$OUT/MiSTerKVMS.xcarchive" DEVELOPMENT_TEAM="$DEVELOPMENT_TEAM" CODE_SIGN_STYLE=Automatic \
+    "${VERSIONS[@]}" "${AUTH[@]}" archive
+  cat > "$OUT/ExportOptions.plist" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>method</key><string>app-store-connect</string>
+	<key>destination</key><string>upload</string>
+	<key>teamID</key><string>$DEVELOPMENT_TEAM</string>
+	<key>signingStyle</key><string>automatic</string>
+	<key>uploadSymbols</key><true/>
+	<key>manageAppVersionAndBuildNumber</key><false/>
+</dict>
+</plist>
+PLIST
+  echo "==> Upload to App Store Connect ($VERSION build $BUILD_NUMBER)"
+  xcb upload -exportArchive -archivePath "$OUT/MiSTerKVMS.xcarchive" \
+    -exportOptionsPlist "$OUT/ExportOptions.plist" -exportPath "$OUT/export" "${AUTH[@]}"
+  echo "Uploaded $VERSION ($BUILD_NUMBER): it shows up in TestFlight once Apple has processed it."
+  exit 0
+fi
+
 echo "==> iPhone app"
 if [[ "$DEVICE" == "1" ]]; then
   DEST="generic/platform=iOS"
@@ -66,10 +120,8 @@ else
   DEST="generic/platform=iOS Simulator"
   SIGN=(CODE_SIGNING_ALLOWED=NO)
 fi
-xcodebuild -project ios/MiSTerKVMS.xcodeproj -scheme MiSTerKVMS -configuration Release \
-  -destination "$DEST" -derivedDataPath "$OUT/DerivedData" \
-  MARKETING_VERSION="$VERSION" CURRENT_PROJECT_VERSION="$BUILD_NUMBER" "${SIGN[@]}" \
-  build | grep -E "error|warning: |BUILD" || true
+xcb build "${PROJECT[@]}" -destination "$DEST" -derivedDataPath "$OUT/DerivedData" \
+  "${VERSIONS[@]}" "${SIGN[@]}" build
 APP=$(find "$OUT/DerivedData/Build/Products" -maxdepth 2 -name MiSTerKVMS.app | head -1)
 [[ -n "$APP" ]] || { echo "build failed" >&2; exit 1; }
 echo "Built $APP"

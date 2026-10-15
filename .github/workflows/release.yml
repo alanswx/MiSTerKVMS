@@ -223,6 +223,73 @@ jobs:
           path: build/MiSTerKVMS-${{ env.VERSION }}-linux-x86_64.tar.gz
           archive: false
 
+  # The iPhone app. Pushes to main (and manual runs on main) archive it and
+  # upload it to TestFlight when the App Store Connect key and the team id
+  # are set; everything else only checks that it builds (for the simulator).
+  # It goes to TestFlight, not into the GitHub release, so it isn't part of
+  # publish and an iOS problem never holds up the desktop release.
+  build-ios:
+    needs: version
+    runs-on: macos-26
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+      BUILD_NUMBER: ${{ github.run_number }}
+      UPLOAD: ${{ github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && secrets.APPLE_API_KEY_P8 != '' && secrets.APPLE_API_KEY_ID != '' && secrets.APPLE_API_ISSUER_ID != '' && secrets.APPLE_TEAM_ID != '' }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      # App Store uploads must be built with a recent SDK: use the newest
+      # released Xcode on the runner.
+      - name: Select Xcode
+        run: |
+          xcode=$(printf '%s\n' /Applications/Xcode_*.app | grep -viE 'beta|release_candidate' | sort -V | tail -1)
+          sudo xcode-select -s "$xcode"
+          xcodebuild -version
+
+      - name: Rust toolchain (iOS)
+        run: |
+          rustup toolchain install stable --profile minimal \
+            --target aarch64-apple-ios --target aarch64-apple-ios-sim --target aarch64-apple-darwin
+          rustup default stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build (simulator)
+        if: env.UPLOAD != 'true'
+        run: scripts/build-ios.sh
+
+      - name: Build and upload to TestFlight
+        if: env.UPLOAD == 'true'
+        env:
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+          ASC_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
+          DEVELOPMENT_TEAM: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          ASC_KEY_ID=$(printf '%s' "$ASC_KEY_ID" | tr -d '[:space:]')
+          ASC_ISSUER_ID=$(printf '%s' "$ASC_ISSUER_ID" | tr -d '[:space:]')
+          DEVELOPMENT_TEAM=$(printf '%s' "$DEVELOPMENT_TEAM" | tr -d '[:space:]')
+          export ASC_KEY_ID ASC_ISSUER_ID DEVELOPMENT_TEAM
+          export ASC_KEY_PATH="$RUNNER_TEMP/AuthKey_$ASC_KEY_ID.p8"
+          # Accept the .p8 pasted as-is or base64-encoded (as build-mac does).
+          if printf '%s' "$APPLE_API_KEY_P8" | grep -q "BEGIN PRIVATE KEY"; then
+            printf '%s\n' "$APPLE_API_KEY_P8" > "$ASC_KEY_PATH"
+          else
+            echo "$APPLE_API_KEY_P8" | base64 --decode > "$ASC_KEY_PATH"
+          fi
+          trap 'rm -f "$ASC_KEY_PATH"' EXIT
+          scripts/build-ios.sh --testflight
+
+      - name: xcodebuild logs
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: ios-xcodebuild-logs
+          path: build/ios/xcodebuild-*.log
+          if-no-files-found: ignore
+
   # Every platform built: publish them together.
   publish:
     needs: [version, build-mac, build-windows, build-linux]

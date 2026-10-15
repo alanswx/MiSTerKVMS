@@ -127,8 +127,9 @@ Every push to `main` builds a universal DMG, a Windows zip and a Linux tarball a
 | `APPLE_API_KEY_P8` | App Store Connect API key (.p8), base64 |
 | `APPLE_API_KEY_ID` | Its key ID |
 | `APPLE_API_ISSUER_ID` | Its issuer ID |
+| `APPLE_TEAM_ID` | Apple Team ID; with the API key (Admin role), the iPhone app goes to TestFlight |
 
-Without them the release is ad-hoc signed and not notarized.
+Without them the release is ad-hoc signed and not notarized. The iPhone app isn't in the GitHub release: on pushes to `main` it's uploaded to TestFlight (setup: [docs/IPHONE.md](docs/IPHONE.md) §6.1); without the secrets CI only checks that it builds.
 
 ## Credits
 
