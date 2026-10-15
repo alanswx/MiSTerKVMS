@@ -166,7 +166,12 @@ Full screen, status bar and home indicator hidden. From top:
   is outlined and can be dragged anywhere; **Done** keeps the places
   (fractions of the space above the keyboard, so they follow it).
   **Reset positions** puts them back. Outside Arrange mode the buttons never
-  move, so pressing one can't drag it by accident.
+  move, so pressing one can't drag it by accident. A chevron on the D-pad's
+  corner collapses them all into one small round button where the D-pad
+  was; tapping it brings them back.
+- **MiSTer button** (top left, the open MiSTer's name): a list of the
+  saved MiSTers to switch to (the three-finger swipe does the same) and
+  **Disconnect**, back to the list.
 - **Control banner** ("Watching — *Name* has control", **Take control**),
   as on the Mac.
 

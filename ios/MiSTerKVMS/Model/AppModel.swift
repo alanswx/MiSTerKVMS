@@ -25,6 +25,11 @@ final class AppModel: ObservableObject {
         state = core.state()
         observer.model = self
         profiles = core.profiles()
+        // Other viewers see this name ("iPhone has control"). The core falls
+        // back to "MiSTerKVMS" where it can't read a computer name, as on iOS.
+        if core.viewerName() == "MiSTerKVMS" {
+            core.setViewerName(name: UIDevice.current.name)
+        }
         let audio = AVAudioSession.sharedInstance()
         try? audio.setCategory(.playback, mode: .default, options: [.mixWithOthers])
         try? audio.setActive(true)
@@ -90,10 +95,15 @@ final class AppModel: ObservableObject {
     func step(_ offset: Int) {
         guard profiles.count > 1, let id = state.profileId,
               let i = profiles.firstIndex(where: { $0.id == id }) else { return }
-        let next = profiles[(i + offset + profiles.count) % profiles.count]
+        switchTo(profiles[(i + offset + profiles.count) % profiles.count])
+    }
+
+    /// Leave the open MiSTer (keys and buttons released) for another one.
+    func switchTo(_ profile: HostProfile) {
+        guard profile.id != state.profileId else { return }
         core.releaseAll()
         core.close()
-        open(next)
+        open(profile)
     }
 
     /// iOS suspends sockets in the background: let go of the MiSTer cleanly

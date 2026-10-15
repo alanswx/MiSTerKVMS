@@ -31,4 +31,6 @@ enum Pref {
     static let stats = "show.stats"
     /// How opaque the quick buttons are (0.25–1).
     static let buttonOpacity = "quick.opacity"
+    /// The quick buttons folded into one small button.
+    static let quickCollapsed = "quick.collapsed"
 }

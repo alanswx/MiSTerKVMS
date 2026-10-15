@@ -11,6 +11,7 @@ struct SessionScreen: View {
     @AppStorage(Pref.banner) private var showBanner = true
     @AppStorage(Pref.stats) private var showStats = false
     @State private var menuOpen = false
+    @State private var switcherOpen = false
     @State private var arranging = false
 
     var body: some View {
@@ -20,7 +21,7 @@ struct SessionScreen: View {
             TouchpadVideo(model: model, onMenu: { menuOpen.toggle() }, onSwitch: { model.step($0) })
                 .ignoresSafeArea(.container)
 
-            KeyboardHost(model: model, showKeyboard: showKeyboard && !menuOpen, showFunctionBar: showFunctionBar && !menuOpen)
+            KeyboardHost(model: model, showKeyboard: showKeyboard && !sheetOpen, showFunctionBar: showFunctionBar && !sheetOpen)
                 .frame(width: 0, height: 0)
 
             statusOverlay
@@ -32,7 +33,7 @@ struct SessionScreen: View {
             } else {
                 VStack(spacing: 6) {
                     HStack(alignment: .top) {
-                        if showBanner, let banner = controlBanner { banner }
+                        misterButton
                         Spacer()
                         Button { menuOpen = true } label: {
                             Image(systemName: "slider.horizontal.3")
@@ -43,6 +44,9 @@ struct SessionScreen: View {
                         .tint(.white)
                         .accessibilityLabel("Controls")
                     }
+                    if showBanner, let banner = controlBanner {
+                        HStack { banner; Spacer() }
+                    }
                     if showStats { stats }
                     Spacer()
                 }
@@ -52,11 +56,33 @@ struct SessionScreen: View {
         }
         .statusBarHidden()
         .persistentSystemOverlays(.hidden)
+        .sheet(isPresented: $switcherOpen) {
+            MiSTerSwitcher()
+                .presentationDetents([.medium, .large])
+                .presentationBackground(.ultraThinMaterial)
+        }
         .sheet(isPresented: $menuOpen) {
             ControlsMenu(arrange: { arranging = true })
                 .presentationDetents([.medium, .large])
                 .presentationBackground(.ultraThinMaterial)
         }
+    }
+
+    private var sheetOpen: Bool { menuOpen || switcherOpen }
+
+    /// The open MiSTer's name: tap to switch to another one or disconnect.
+    private var misterButton: some View {
+        Button { switcherOpen = true } label: {
+            HStack(spacing: 6) {
+                Text(model.profile?.name ?? "MiSTer").font(.subheadline.weight(.semibold)).lineLimit(1)
+                Image(systemName: "chevron.down").font(.system(size: 11, weight: .bold))
+            }
+            .padding(.horizontal, 12)
+            .frame(height: 40)
+            .background(Capsule().fill(.black.opacity(0.5)))
+        }
+        .tint(.white)
+        .accessibilityLabel("Switch MiSTer or disconnect")
     }
 
     /// Arrange mode's instructions and Done.
@@ -195,13 +221,60 @@ struct ControlsMenu: View {
                     Text("Three-finger tap: this menu, even with everything hidden. Three-finger swipe: next or previous MiSTer.")
                 }
                 Section {
-                    Button("All MiSTers", role: .destructive) {
+                    Button("Disconnect", role: .destructive) {
                         dismiss()
                         model.close()
                     }
                 }
             }
             .navigationTitle(model.profile?.name ?? "MiSTer")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } }
+            }
+        }
+    }
+}
+
+/// Every saved MiSTer, the open one ticked: tap another to switch to it, or
+/// disconnect and go back to the list.
+struct MiSTerSwitcher: View {
+    @EnvironmentObject private var model: AppModel
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Section {
+                    ForEach(model.profiles) { profile in
+                        Button {
+                            dismiss()
+                            model.switchTo(profile)
+                        } label: {
+                            HStack {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(profile.name)
+                                    Text(profile.subtitle).font(.caption).foregroundStyle(.secondary)
+                                }
+                                Spacer()
+                                if profile.id == model.state.profileId {
+                                    Image(systemName: "checkmark").foregroundStyle(Color.accentColor)
+                                }
+                            }
+                        }
+                        .tint(.primary)
+                    }
+                } footer: {
+                    Text("Three-finger swipe left or right also switches.")
+                }
+                Section {
+                    Button("Disconnect", role: .destructive) {
+                        dismiss()
+                        model.close()
+                    }
+                }
+            }
+            .navigationTitle("MiSTers")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } }

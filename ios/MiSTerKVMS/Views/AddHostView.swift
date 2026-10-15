@@ -23,6 +23,8 @@ struct AddHostView: View {
                     }
                     ForEach(browser.found) { stream in
                         Button {
+                            // Set before the task starts, so a second tap can't add it twice.
+                            resolving = stream.id
                             Task { await add(stream) }
                         } label: {
                             HStack {
@@ -32,11 +34,16 @@ struct AddHostView: View {
                                         .font(.caption).foregroundStyle(.secondary)
                                 }
                                 Spacer()
-                                if resolving == stream.id { ProgressView() }
+                                if resolving == stream.id {
+                                    ProgressView()
+                                } else if isSaved(stream) {
+                                    Label("Added", systemImage: "checkmark").labelStyle(.iconOnly)
+                                        .foregroundStyle(.secondary)
+                                }
                             }
                         }
                         .tint(.primary)
-                        .disabled(resolving != nil)
+                        .disabled(resolving != nil || isSaved(stream))
                     }
                 } header: {
                     Text("On this network")
@@ -71,8 +78,12 @@ struct AddHostView: View {
         .onDisappear { browser.stop() }
     }
 
+    /// Already in the list (same stream name on the same capture server).
+    private func isSaved(_ stream: StreamBrowser.Found) -> Bool {
+        model.profiles.contains { $0.streamName == stream.name && (stream.mister.isEmpty || $0.misterHost == stream.mister) }
+    }
+
     private func add(_ stream: StreamBrowser.Found) async {
-        resolving = stream.id
         defer { resolving = nil }
         guard let address = await StreamBrowser.address(of: stream) else {
             error = "\(stream.name) didn't answer. Is the phone on the same network as \(stream.server)?"
@@ -101,6 +112,11 @@ struct AddHostView: View {
     }
 
     private func save(name: String, address: String, mister: String) {
+        // The same address twice is one MiSTer: keep the saved one.
+        guard !model.profiles.contains(where: { $0.stream.caseInsensitiveCompare(address) == .orderedSame }) else {
+            dismiss()
+            return
+        }
         var profile = makeProfile(address: address)
         profile.name = name
         profile.misterHost = mister

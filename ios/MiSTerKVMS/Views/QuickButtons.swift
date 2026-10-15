@@ -4,12 +4,17 @@ import SwiftUI
 /// and Backspace. Each piece is shown or hidden on its own from the controls
 /// menu, and in Arrange mode each can be dragged anywhere on the screen; the
 /// places are remembered as fractions of the space above the keyboard.
+/// The chevron on the D-pad's corner collapses them all into one small round
+/// button where the D-pad was; tapping that brings them back.
 struct QuickButtons: View {
     @Binding var arranging: Bool
     @AppStorage(Pref.dpad) private var showDpad = true
     @AppStorage(Pref.f12Button) private var showF12 = true
     @AppStorage(Pref.backspaceButton) private var showBackspace = true
     @AppStorage(Pref.buttonOpacity) private var opacity = 0.6
+    @AppStorage(Pref.quickCollapsed) private var collapsed = false
+
+    private static let dpadStart = CGPoint(x: 0.95, y: 0.7)
 
     var body: some View {
         ZStack {
@@ -17,21 +22,61 @@ struct QuickButtons: View {
                 // Swallows touches, so arranging never clicks on the MiSTer.
                 Color.black.opacity(0.35).contentShape(Rectangle())
             }
-            if showDpad {
-                Floating(id: "dpad", size: CGSize(width: DPad.size, height: DPad.size),
-                         initial: CGPoint(x: 0.95, y: 0.7), arranging: arranging, opacity: opacity) { DPad() }
+            if collapsed && !arranging {
+                if showDpad || showF12 || showBackspace {
+                    Floating(id: "dpad", size: CGSize(width: 48, height: 48), initial: Self.dpadStart,
+                             arranging: false, opacity: max(opacity, 0.8)) { expandButton }
+                }
+            } else {
+                pieces
             }
-            if showF12 {
-                Floating(id: "f12", size: SmallButton.size, initial: CGPoint(x: 0.04, y: 1),
-                         arranging: arranging, opacity: opacity) { SmallButton(title: "F12", usage: HID.f12) }
-            }
-            if showBackspace {
-                Floating(id: "backspace", size: SmallButton.size, initial: CGPoint(x: 0.96, y: 1),
-                         arranging: arranging, opacity: opacity) {
-                    SmallButton(systemImage: "delete.left", usage: HID.backspace, label: "Backspace")
+        }
+    }
+
+    @ViewBuilder private var pieces: some View {
+        if showDpad {
+            Floating(id: "dpad", size: CGSize(width: DPad.size, height: DPad.size),
+                     initial: Self.dpadStart, arranging: arranging, opacity: opacity) {
+                DPad().overlay(alignment: .topTrailing) {
+                    if !arranging { collapseButton }
                 }
             }
         }
+        if showF12 {
+            Floating(id: "f12", size: SmallButton.size, initial: CGPoint(x: 0.04, y: 1),
+                     arranging: arranging, opacity: opacity) { SmallButton(title: "F12", usage: HID.f12) }
+        }
+        if showBackspace {
+            Floating(id: "backspace", size: SmallButton.size, initial: CGPoint(x: 0.96, y: 1),
+                     arranging: arranging, opacity: opacity) {
+                SmallButton(systemImage: "delete.left", usage: HID.backspace, label: "Backspace")
+            }
+        }
+    }
+
+    /// In the D-pad's corner (outside the circle): fold everything away.
+    private var collapseButton: some View {
+        Button { withAnimation(.snappy) { collapsed = true } } label: {
+            Image(systemName: "arrow.down.right.and.arrow.up.left")
+                .font(.system(size: 12, weight: .bold))
+                .frame(width: 30, height: 30)
+                .background(Circle().fill(.black.opacity(0.8)))
+                .overlay(Circle().stroke(.white.opacity(0.4)))
+        }
+        .tint(.white)
+        .accessibilityLabel("Collapse quick buttons")
+    }
+
+    /// What's left when collapsed: tap to bring the buttons back.
+    private var expandButton: some View {
+        Button { withAnimation(.snappy) { collapsed = false } } label: {
+            Image(systemName: "dpad").font(.system(size: 22))
+                .frame(width: 48, height: 48)
+                .background(Circle().fill(.black.opacity(0.7)))
+                .overlay(Circle().stroke(.white.opacity(0.4)))
+        }
+        .tint(.white)
+        .accessibilityLabel("Show quick buttons")
     }
 
     /// Forget where the buttons were moved to.
