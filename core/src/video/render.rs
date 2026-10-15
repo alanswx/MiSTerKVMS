@@ -1,4 +1,4 @@
-//! Draws video frames into a native view with wgpu (Metal on macOS,
+//! Draws video frames into a native view with wgpu (Metal on macOS and iOS,
 //! D3D12/Vulkan elsewhere): crop, fit/integer/native scale, zoom/pan,
 //! nearest or smooth filtering.
 
@@ -7,8 +7,8 @@ use std::num::NonZeroIsize;
 use std::ptr::NonNull;
 
 use raw_window_handle::{
-    AppKitDisplayHandle, AppKitWindowHandle, RawDisplayHandle, RawWindowHandle, WaylandDisplayHandle,
-    WaylandWindowHandle, Win32WindowHandle, WindowsDisplayHandle, XlibDisplayHandle, XlibWindowHandle,
+    AppKitDisplayHandle, AppKitWindowHandle, RawDisplayHandle, RawWindowHandle, UiKitDisplayHandle,
+    UiKitWindowHandle, WaylandDisplayHandle, WaylandWindowHandle, Win32WindowHandle, WindowsDisplayHandle, XlibDisplayHandle, XlibWindowHandle,
 };
 
 use super::crop::Crop;
@@ -139,7 +139,7 @@ pub struct Renderer {
 }
 
 /// Creates the GPU surface on the caller's thread (must be the main thread for
-/// AppKit); everything else can then move to the render thread.
+/// AppKit and UIKit); everything else can then move to the render thread.
 ///
 /// # Safety
 /// The handles in `target` must be valid and outlive the returned surface.
@@ -157,6 +157,10 @@ pub unsafe fn create_surface(
         NativeSurface::AppKit { ns_view } => raw(
             RawDisplayHandle::AppKit(AppKitDisplayHandle::new()),
             RawWindowHandle::AppKit(AppKitWindowHandle::new(ptr(ns_view, "view")?)),
+        ),
+        NativeSurface::UiKit { ui_view } => raw(
+            RawDisplayHandle::UiKit(UiKitDisplayHandle::new()),
+            RawWindowHandle::UiKit(UiKitWindowHandle::new(ptr(ui_view, "view")?)),
         ),
         NativeSurface::Win32 { hwnd, hinstance } => {
             let mut handle = Win32WindowHandle::new(NonZeroIsize::new(hwnd as isize).ok_or("null hwnd")?);

@@ -497,6 +497,37 @@ impl Controller {
         }
     }
 
+    /// Press and release one key (on-screen buttons: arrows, OK, Backspace).
+    pub fn tap_key(&self, hid_usage: u16) {
+        if let Some(s) = self.input_session() {
+            s.tap_key(hid_usage);
+        }
+    }
+
+    /// Press keys together and release them in reverse (a key with the
+    /// on-screen modifiers held).
+    pub fn press_combo(&self, hid_usages: Vec<u16>) {
+        if let Some(s) = self.input_session() {
+            s.press_combo(hid_usages);
+        }
+    }
+
+    /// Type text as key presses on a US layout (a touch keyboard sends
+    /// characters, not keys), each with `modifiers` held. Characters with no
+    /// US key are skipped.
+    pub fn type_text(&self, text: String, modifiers: Vec<u16>) {
+        let Some(s) = self.input_session() else { return };
+        for c in text.chars() {
+            let Some((usage, shift)) = crate::text::key_for_char(c) else { continue };
+            let mut keys = modifiers.clone();
+            if shift && !keys.contains(&crate::text::LEFT_SHIFT) {
+                keys.push(crate::text::LEFT_SHIFT);
+            }
+            keys.push(usage);
+            s.press_combo(keys);
+        }
+    }
+
     // MARK: Display
 
     /// Apply display settings; scale, smoothing, auto-crop and the

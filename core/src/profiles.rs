@@ -289,7 +289,7 @@ pub fn config_dir() -> Option<PathBuf> {
     let env = |k| std::env::var_os(k).filter(|v| !v.is_empty()).map(PathBuf::from);
     if cfg!(windows) {
         env("APPDATA").map(|d| d.join("MiSTerKVMS"))
-    } else if cfg!(target_os = "macos") {
+    } else if cfg!(any(target_os = "macos", target_os = "ios")) {
         env("HOME").map(|h| h.join("Library/Application Support/MiSTerKVMS"))
     } else {
         env("XDG_CONFIG_HOME")

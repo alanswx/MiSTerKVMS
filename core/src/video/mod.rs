@@ -82,6 +82,8 @@ impl ScaleMode {
 pub enum NativeSurface {
     /// An NSView (macOS). Create the session on the main thread.
     AppKit { ns_view: u64 },
+    /// A UIView (iOS). Create the session on the main thread.
+    UiKit { ui_view: u64 },
     /// A window (Windows). `hinstance` may be 0.
     Win32 { hwnd: u64, hinstance: u64 },
     /// A DirectComposition surface handle (Windows,
