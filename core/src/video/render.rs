@@ -206,6 +206,10 @@ impl Renderer {
         .map_err(|e| format!("no GPU adapter: {e}"))?;
         let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
             label: Some("kvms"),
+            // Two textured quads need little: ask for the baseline every GPU
+            // has (the default limits are above the iOS simulator's), with
+            // the adapter's own texture size so big frames still fit.
+            required_limits: wgpu::Limits::downlevel_defaults().using_resolution(adapter.limits()),
             ..Default::default()
         }))
         .map_err(|e| format!("request device: {e}"))?;

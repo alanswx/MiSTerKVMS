@@ -169,12 +169,11 @@ One TCP connection per viewer per stream, `TCP_NODELAY`. No TLS on the LAN.
   UGREEN, the GC573's DirectShow pin): 48 kHz stereo, 5.0 s of audio per
   5 s. Windows feeds *silence* rather than an error when microphone privacy
   blocks an app, so the content check matters; device-wide microphone
-  access (the setting that applies to LocalSystem) is on. Both MiSTers ran
-  a silent core during the test, so non-silent audio from the service
-  still needs one check with sound: `misterkvms-cli stream
-  mkvm://127.0.0.1/<stream>` reports `audio_peak` (0 = silence). The test
-  pattern's beep (peak 12000) shows the server → viewer path carries
-  audio.
+  access (the setting that applies to LocalSystem) is on. Real sound from
+  the service is confirmed (15 October): `misterkvms-cli stream
+  mkvm://danihtpc/MiSTer-Pi` reported `audio_peak` 9762 from the GC573
+  (0 = silence). The test pattern's beep (peak 12000) shows the server →
+  viewer path carries audio.
 - **Power throttling:** Windows treats a windowless process as background
   (EcoQoS); the GC573's JPEG encoding fell from 57 to 26 fps in the
   service. The server opts out (`SetProcessInformation`,
@@ -379,9 +378,8 @@ scaling, crop, recording. Changed:
 | C10 | Release (1.0); NDI removed | server and apps in releases; NDI code, SETUP-NDI and release notes removed; profiles migrate |
 | Later | OBS plugin, Raspberry Pi capture box, QUIC + away from home, Mac App Store build | |
 
-Status (14 October 2026): **C3** done on Windows (both cards, video and
-audio from the service; audio content still to be checked with a MiSTer
-making sound). **C5**: the service is in, set up from the page.
+Status (15 October 2026): **C3** done on Windows (both cards, video and
+audio from the service, real sound confirmed). **C5**: the service is in, set up from the page.
 **C6**: the setup page does streams, previews, the service, LAN access,
 the password and the test pattern; the tray icon and the installer are
 still to do. Recording from streams and local cards works in the apps'
