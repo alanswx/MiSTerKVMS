@@ -97,7 +97,7 @@ if [[ "$TESTFLIGHT" == "1" ]]; then
 <plist version="1.0">
 <dict>
 	<key>method</key><string>app-store-connect</string>
-	<key>destination</key><string>upload</string>
+	<key>destination</key><string>export</string>
 	<key>teamID</key><string>$DEVELOPMENT_TEAM</string>
 	<key>signingStyle</key><string>automatic</string>
 	<key>uploadSymbols</key><true/>
@@ -105,9 +105,17 @@ if [[ "$TESTFLIGHT" == "1" ]]; then
 </dict>
 </plist>
 PLIST
-  echo "==> Upload to App Store Connect ($VERSION build $BUILD_NUMBER)"
-  xcb upload -exportArchive -archivePath "$OUT/MiSTerKVMS.xcarchive" \
+  echo "==> Export the App Store .ipa"
+  xcb export -exportArchive -archivePath "$OUT/MiSTerKVMS.xcarchive" \
     -exportOptionsPlist "$OUT/ExportOptions.plist" -exportPath "$OUT/export" "${AUTH[@]}"
+  IPA=$(find "$OUT/export" -maxdepth 1 -name '*.ipa' | head -1)
+  [[ -n "$IPA" ]] || { echo "export made no .ipa" >&2; exit 1; }
+  # altool logs in with the key the way notarytool does; xcodebuild's own
+  # upload (destination "upload") was refused for the same key ("Cannot
+  # verify client's JWT headers").
+  echo "==> Upload to App Store Connect ($VERSION build $BUILD_NUMBER)"
+  xcrun altool --upload-package "$IPA" --api-key "$ASC_KEY_ID" --api-issuer "$ASC_ISSUER_ID" \
+    --p8-file-path "$ASC_KEY_PATH" --output-format normal
   echo "Uploaded $VERSION ($BUILD_NUMBER): it shows up in TestFlight once Apple has processed it."
   exit 0
 fi
