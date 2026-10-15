@@ -304,9 +304,18 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      # Only the release files: other artifacts (the iOS build's logs when
+      # it fails) must never end up in a release.
       - uses: actions/download-artifact@v8
         with:
           path: dist
+          pattern: MiSTerKVMS-*
+          merge-multiple: true
+
+      - uses: actions/download-artifact@v8
+        with:
+          path: dist
+          pattern: misterkvms-capture-*
           merge-multiple: true
 
       - name: Publish release
