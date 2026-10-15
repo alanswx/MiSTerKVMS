@@ -3,6 +3,7 @@
 //! for choosing cards and checking them (docs/CAPTURE-SERVER.md §5).
 
 mod config;
+mod devices;
 mod discovery;
 mod net;
 mod service;
@@ -85,6 +86,8 @@ pub struct Server {
     settings: Mutex<Settings>,
     streams: Mutex<Vec<Arc<Stream>>>,
     discovery: Mutex<Option<discovery::Discovery>>,
+    /// Paired devices (keys for connecting from the internet).
+    pub devices: devices::Devices,
 }
 
 impl Server {
@@ -215,6 +218,7 @@ pub fn serve(dir: PathBuf, as_service: bool) -> Result<(), String> {
         settings: Mutex::new(settings.clone()),
         streams: Mutex::new(Vec::new()),
         discovery: Mutex::new(discovery::Discovery::start().map_err(|e| log(&format!("mDNS: {e}"))).ok()),
+        devices: devices::Devices::load(&dir),
     });
     let patience = Instant::now() + Duration::from_secs(if as_service { 45 } else { 0 });
     retry(patience, || net::listen(server.clone(), settings.port).map_err(|e| format!("can't listen on TCP {}: {e}", settings.port)))?;

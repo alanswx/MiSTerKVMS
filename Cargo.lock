@@ -1931,6 +1931,7 @@ name = "misterkvms-capture"
 version = "1.0.0"
 dependencies = [
  "clap",
+ "if-addrs",
  "kvms-capture",
  "kvms-codec",
  "kvms-core",

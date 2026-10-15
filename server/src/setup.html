@@ -53,6 +53,9 @@
   .settings { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 16px; display: flex; flex-direction: column; gap: 12px; max-width: 620px; }
   .check { flex-direction: row; align-items: center; gap: 8px; color: var(--text); font-size: 14px; }
   .viewers { margin: 2px 0 0; padding: 0; list-style: none; font-size: 13px; }
+  .paired { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 8px; }
+  .paired li { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; }
+  .paired .who { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
   .viewers li { color: var(--muted); }
   .viewers li.ctl { color: var(--text); }
   #toast { position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%); background: var(--text); color: var(--bg); padding: 8px 14px; border-radius: 8px; font-size: 14px; opacity: 0; transition: opacity .2s; pointer-events: none; max-width: calc(100% - 32px); }
@@ -125,6 +128,24 @@
         <button class="primary" id="updApply" hidden>Update</button>
       </div>
       <span class="hint" id="updNote"></span>
+    </div>
+  </section>
+
+  <section>
+    <h2>Internet access</h2>
+    <div class="settings">
+      <label class="check"><input type="checkbox" id="remoteOn"> Allow connections from the internet</label>
+      <span class="hint" id="remoteHint">Off: only computers and phones on this network can watch. On: phones you pair can also connect from anywhere, encrypted with a key of their own.</span>
+      <div class="fields" id="remoteDetails" hidden>
+        <div class="inline">
+          <label>Address from the internet <input id="remoteAddress" placeholder="myhome.duckdns.org:5970" autocapitalize="off" spellcheck="false"></label>
+          <button type="button" id="saveRemoteAddress">Set</button>
+        </div>
+        <span class="hint">Your home's public IP address or a dynamic-DNS name, and the port. Phones get it when they pair, and can change it.</span>
+        <div class="note" id="routerNote"></div>
+        <ul class="paired" id="pairedList"></ul>
+        <span class="hint">To pair a phone: on the iPhone, while it's on this network, open the MiSTer's settings and turn on “Use over the internet”. Revoke a phone and it can't connect again until it pairs at home.</span>
+      </div>
     </div>
   </section>
 
@@ -459,6 +480,55 @@ $("savePassword").onclick = async () => {
   } catch (e) { if (e.message !== "cancelled") toast(e.message); }
 };
 
+// Internet access: the setting, the router's port forward, paired devices.
+let remote = null;
+
+async function loadRemote() {
+  remote = await fetch("/api/remote").then(r => r.json());
+  renderRemote();
+}
+
+function when(secs) {
+  if (!secs) return "never";
+  const d = new Date(secs * 1000), today = new Date();
+  return d.toDateString() === today.toDateString() ? d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : d.toLocaleDateString();
+}
+
+function renderRemote() {
+  if (!remote) return;
+  $("remoteOn").checked = remote.enabled;
+  $("remoteOn").disabled = !remote.local;
+  if (!remote.local) $("remoteHint").textContent = "Turning this on or off can only be done on the capture PC itself.";
+  $("remoteDetails").hidden = !remote.enabled;
+  if (document.activeElement !== $("remoteAddress")) $("remoteAddress").value = remote.address;
+  const here = remote.homeAddresses.length ? remote.homeAddresses.map(a => `<code>${esc(a)}</code>`).join(" or ") : "this PC";
+  $("routerNote").innerHTML = `On your router, forward <b>TCP port ${remote.port}</b> to ${here}. Only paired phones get in from outside; everything else from the internet is refused.`;
+  $("pairedList").innerHTML = remote.devices.length ? remote.devices.map(d => `
+    <li>
+      <span class="who">
+        <span><span class="dot ${d.connected ? "ok" : ""}" ${d.connected ? "" : 'style="background: var(--line)"'}></span>${esc(d.name)}</span>
+        <span class="hint">Paired ${esc(when(d.paired))} · last seen ${esc(when(d.lastSeen))}${d.lastAddress ? " from " + esc(d.lastAddress) : ""}</span>
+      </span>
+      <button class="danger" data-revoke="${esc(d.keyId)}" data-name="${esc(d.name)}">Revoke</button>
+    </li>`).join("") : `<li class="hint">No paired phones yet.</li>`;
+  for (const b of document.querySelectorAll("[data-revoke]")) {
+    b.onclick = async () => {
+      if (!confirm(`Revoke ${b.dataset.name}? It's disconnected now and can't connect again until it pairs at home.`)) return;
+      try { await api("/api/remote/revoke", { keyId: b.dataset.revoke }); await loadRemote(); toast("Revoked"); }
+      catch (e) { if (e.message !== "cancelled") toast(e.message); }
+    };
+  }
+}
+
+$("remoteOn").onchange = async () => {
+  try { await api("/api/remote", { enabled: $("remoteOn").checked }); await loadRemote(); toast("Saved"); }
+  catch (e) { $("remoteOn").checked = !$("remoteOn").checked; if (e.message !== "cancelled") toast(e.message); }
+};
+$("saveRemoteAddress").onclick = async () => {
+  try { await api("/api/remote", { address: $("remoteAddress").value }); await loadRemote(); toast("Saved"); }
+  catch (e) { if (e.message !== "cancelled") toast(e.message); }
+};
+
 // Run in the background: the Windows service.
 let service = null, svcBusy = "";
 
@@ -595,9 +665,9 @@ $("updApply").onclick = async () => {
 };
 
 (async () => {
-  try { await loadState(); await loadDevices(); await loadService(); }
+  try { await loadState(); await loadDevices(); await loadService(); await loadRemote(); }
   catch (e) { toast("Can't reach the capture server: " + e.message); }
-  setInterval(() => { if (!svcBusy) { loadState().catch(() => {}); loadService().catch(() => {}); } }, 2000);
+  setInterval(() => { if (!svcBusy) { loadState().catch(() => {}); loadService().catch(() => {}); loadRemote().catch(() => {}); } }, 2000);
 })();
 </script>
 </body>

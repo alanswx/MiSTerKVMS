@@ -159,6 +159,34 @@ fn handle(server: Arc<Server>, mut request: Request) {
                 }
             }
         }
+        (Method::Get, "/api/remote") => json_response(remote(&server, is_local(peer))),
+        (Method::Post, "/api/remote") => {
+            if !authorised {
+                error(403, "wrong password")
+            } else {
+                match read_json::<serde_json::Value>(&mut request) {
+                    Ok(v) if v.get("enabled").is_some() && !is_local(peer) => error(403, "this can only be changed on the capture PC itself"),
+                    Ok(v) => match save_remote(&server, &v) {
+                        Ok(()) => json_response(json!({ "ok": true })),
+                        Err(e) => error(500, &e),
+                    },
+                    Err(e) => error(400, &e),
+                }
+            }
+        }
+        (Method::Post, "/api/remote/revoke") => {
+            if !authorised {
+                error(403, "wrong password")
+            } else {
+                match read_json::<serde_json::Value>(&mut request) {
+                    Ok(v) => match v.get("keyId").and_then(|k| k.as_str()) {
+                        Some(id) if server.devices.revoke(id) => json_response(json!({ "ok": true })),
+                        _ => error(404, "no such device"),
+                    },
+                    Err(e) => error(400, &e),
+                }
+            }
+        }
         (Method::Get, "/api/test-mister") => {
             let host = param(&query, "host").unwrap_or_default();
             let port: u16 = param(&query, "port").and_then(|p| p.parse().ok()).unwrap_or(8182);
@@ -269,6 +297,60 @@ fn save_settings(server: &Server, v: &serde_json::Value) -> Result<(), String> {
     *settings = Settings { port: settings.port, setup_port: settings.setup_port, ..reloaded };
     kvms_capture::set_test_pattern(settings.test_pattern);
     log(&format!("setup page: allow_lan {}, password {}", settings.allow_lan, if settings.password.is_empty() { "off" } else { "on" }));
+    Ok(())
+}
+
+/// Internet access: the setting, this PC's home addresses (for the router's
+/// port forward) and the paired devices.
+fn remote(server: &Server, local: bool) -> serde_json::Value {
+    let settings = server.settings();
+    let home: Vec<String> = if_addrs::get_if_addrs()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|i| !virtual_adapter(&i.name))
+        .filter_map(|i| match i.ip() {
+            IpAddr::V4(v4) if v4.is_private() => Some(v4.to_string()),
+            _ => None,
+        })
+        .collect();
+    json!({
+        "enabled": settings.remote_enabled,
+        "address": settings.remote_address,
+        "port": settings.port,
+        "homeAddresses": home,
+        "devices": server.devices.list(),
+        "local": local,
+    })
+}
+
+/// VM, container and VPN adapters: not where the router forwards to.
+fn virtual_adapter(name: &str) -> bool {
+    let n = name.to_lowercase();
+    ["vethernet", "wsl", "hyper-v", "docker", "vmware", "vmnet", "vmenet", "virtualbox", "vboxnet", "virbr", "bridge", "br-", "veth", "utun", "zerotier", "tailscale"]
+        .iter()
+        .any(|v| n.contains(v))
+}
+
+fn save_remote(server: &Server, v: &serde_json::Value) -> Result<(), String> {
+    let dir = server.dir();
+    if let Some(on) = v.get("enabled").and_then(|a| a.as_bool()) {
+        config::set_ini_value(dir, "remote", "enabled", if on { "true" } else { "false" }).map_err(|e| e.to_string())?;
+    }
+    if let Some(address) = v.get("address").and_then(|a| a.as_str()) {
+        let address = address.trim();
+        if address.contains(char::is_whitespace) || address.contains('/') {
+            return Err("the address is a host name or IP, and optionally :port (e.g. myhome.duckdns.org:5970)".into());
+        }
+        config::set_ini_value(dir, "remote", "address", address).map_err(|e| e.to_string())?;
+    }
+    let mut settings = server.settings.lock().unwrap();
+    let reloaded = config::load_settings(dir);
+    *settings = Settings { port: settings.port, setup_port: settings.setup_port, ..reloaded };
+    log(&format!(
+        "setup page: internet access {}, address '{}'",
+        if settings.remote_enabled { "on" } else { "off" },
+        settings.remote_address
+    ));
     Ok(())
 }
 

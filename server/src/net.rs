@@ -2,16 +2,22 @@
 //! has a writer thread fed through an outbox that keeps only the newest
 //! picture and a short audio queue, so a slow viewer drops frames instead of
 //! holding anyone up.
+//!
+//! Plain connections are accepted from the home network only. Paired
+//! devices connect encrypted (mkvm::secure), from the home network or, when
+//! internet access is on, from anywhere (docs/IPHONE.md §3). A plain
+//! connection from the home network may ask to pair instead of watching.
 
 use std::collections::VecDeque;
-use std::io::{BufReader, BufWriter, Write};
-use std::net::{Shutdown, TcpListener, TcpStream};
+use std::io::{BufReader, BufWriter, Read, Write};
+use std::net::{IpAddr, Shutdown, TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::time::Duration;
 
-use mkvm::{read_message, write_message, write_video, ErrorMsg, Gap, Message, Subscribe, ViewerId, Welcome, PROTOCOL_VERSION};
+use mkvm::secure::{self, SecureReader, SecureWriter};
+use mkvm::{read_message, write_message, write_video, ErrorMsg, Gap, Message, Pair, Paired, Subscribe, ViewerId, Welcome, PROTOCOL_VERSION};
 
 use crate::stream::{AudioPacket, Encoded, Subscriber, Want};
 use crate::{log, now_100ns, Server};
@@ -22,6 +28,43 @@ const PING_EVERY: Duration = Duration::from_secs(2);
 const MAX_AUDIO_QUEUE: usize = 50;
 
 static NEXT_VIEWER: AtomicU32 = AtomicU32::new(1);
+
+type Reader = BufReader<Box<dyn Read + Send>>;
+type Writer = BufWriter<Box<dyn Write + Send>>;
+
+/// Reads and writes through one shared socket, so the read timeout set on
+/// it applies (on Windows each cloned handle has its own timeouts).
+struct Sock(Arc<TcpStream>);
+
+impl Read for Sock {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        (&*self.0).read(buf)
+    }
+}
+
+impl Write for Sock {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        (&*self.0).write(buf)
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        (&*self.0).flush()
+    }
+}
+
+/// The home network: this PC, private and link-local addresses. Not CGNAT
+/// (100.64/10): that's the carrier's network, not the home's.
+pub fn is_home(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(a) => a.is_loopback() || a.is_private() || a.is_link_local(),
+        IpAddr::V6(a) => {
+            if let Some(v4) = a.to_ipv4_mapped() {
+                return is_home(IpAddr::V4(v4));
+            }
+            let first = a.segments()[0];
+            a.is_loopback() || (first & 0xfe00) == 0xfc00 || (first & 0xffc0) == 0xfe80
+        }
+    }
+}
 
 pub fn listen(server: Arc<Server>, port: u16) -> std::io::Result<()> {
     let listener = TcpListener::bind(("0.0.0.0", port))?;
@@ -61,7 +104,7 @@ struct ViewerConn {
     outbox: Mutex<Outbox>,
     wake: Condvar,
     closed: AtomicBool,
-    sock: TcpStream,
+    sock: Arc<TcpStream>,
 }
 
 impl ViewerConn {
@@ -120,19 +163,53 @@ impl Subscriber for ViewerConn {
 
 fn serve(server: Arc<Server>, sock: TcpStream) -> Result<(), String> {
     sock.set_nodelay(true).ok();
-    let mut write = BufWriter::with_capacity(256 * 1024, sock.try_clone().map_err(|e| e.to_string())?);
-    let mut read = BufReader::with_capacity(64 * 1024, sock.try_clone().map_err(|e| e.to_string())?);
-    // On the handle that reads: on Windows each cloned handle has its own
-    // timeouts.
-    read.get_ref().set_read_timeout(Some(HELLO_TIMEOUT)).ok();
-    let hello = match read_message(&mut read).map_err(|e| e.to_string())?.0 {
-        Message::Hello(h) => h,
-        other => return Err(format!("expected hello, got {other:?}")),
+    let peer = sock.peer_addr().ok();
+    let address = peer.map(|p| p.to_string()).unwrap_or_default();
+    let home = peer.is_some_and(|p| is_home(p.ip()));
+    let sock = Arc::new(sock);
+    sock.set_read_timeout(Some(HELLO_TIMEOUT)).ok();
+    let mut first = [0u8; 4];
+    Sock(sock.clone()).read_exact(&mut first).map_err(|e| e.to_string())?;
+    // A paired device's encrypted connection, or a plain one.
+    let (mut read, mut write, device): (Reader, Writer, Option<String>) = if &first == secure::MAGIC {
+        let id = secure::read_prelude(&mut Sock(sock.clone())).map_err(|e| e.to_string())?;
+        if !home && !server.settings().remote_enabled {
+            return Err("an encrypted connection from the internet, but internet access is off".into());
+        }
+        let Some(key) = server.devices.key(&id) else {
+            // Slows down guessing; the key space makes it hopeless anyway.
+            thread::sleep(Duration::from_secs(1));
+            return Err(format!("unknown or revoked device key {}", secure::hex(&id)));
+        };
+        let session = secure::accept(&mut Sock(sock.clone()), &key).map_err(|e| e.to_string())?;
+        server.devices.connected(&id, &address, &sock);
+        (
+            BufReader::with_capacity(64 * 1024, Box::new(SecureReader::new(Sock(sock.clone()), session.clone()))),
+            BufWriter::with_capacity(256 * 1024, Box::new(SecureWriter::new(Sock(sock.clone()), session))),
+            server.devices.name(&id),
+        )
+    } else {
+        let replay = std::io::Cursor::new(first.to_vec()).chain(Sock(sock.clone()));
+        (BufReader::with_capacity(64 * 1024, Box::new(replay)), BufWriter::with_capacity(256 * 1024, Box::new(Sock(sock.clone()))), None)
     };
-    let refuse = |write: &mut BufWriter<TcpStream>, message: String| {
+    let refuse = |write: &mut Writer, message: String| {
         let _ = write_message(write, &Message::Error(ErrorMsg { message: message.clone() }), now_100ns());
         let _ = write.flush();
         Err(message)
+    };
+    let first = read_message(&mut read).map_err(|e| e.to_string())?.0;
+    if device.is_none() && !home {
+        return refuse(
+            &mut write,
+            "This capture server lets only paired devices in from outside its home network. \
+             Pair this device while it's on the home network first."
+                .into(),
+        );
+    }
+    let hello = match first {
+        Message::Hello(h) => h,
+        Message::Pair(p) if device.is_none() => return pair(&server, p, &address, &mut write),
+        other => return Err(format!("expected hello, got {other:?}")),
     };
     if hello.protocol != PROTOCOL_VERSION {
         return refuse(&mut write, format!("protocol {} not supported (server speaks {PROTOCOL_VERSION})", hello.protocol));
@@ -141,10 +218,15 @@ fn serve(server: Arc<Server>, sock: TcpStream) -> Result<(), String> {
         let names = server.stream_names().join(", ");
         return refuse(&mut write, format!("no stream '{}' on this server (streams: {names})", hello.stream));
     };
-    read.get_ref().set_read_timeout(None).ok();
+    sock.set_read_timeout(None).ok();
     let id = NEXT_VIEWER.fetch_add(1, Ordering::Relaxed);
     let name = if hello.viewer.trim().is_empty() { format!("Viewer {id}") } else { hello.viewer.trim().to_string() };
-    log(&format!("viewer {id} '{name}' ({}) joined '{}'", hello.platform, stream.config.name));
+    let via = match &device {
+        Some(d) if home => format!(", paired device '{d}', encrypted"),
+        Some(d) => format!(", paired device '{d}' from the internet ({address})"),
+        None => String::new(),
+    };
+    log(&format!("viewer {id} '{name}' ({}{via}) joined '{}'", hello.platform, stream.config.name));
     let welcome = Welcome { protocol: PROTOCOL_VERSION, server: crate::server_name(), viewer_id: id, stream: stream.info() };
     write_message(&mut write, &Message::Welcome(welcome), now_100ns()).map_err(|e| e.to_string())?;
     write.flush().map_err(|e| e.to_string())?;
@@ -191,7 +273,26 @@ fn serve(server: Arc<Server>, sock: TcpStream) -> Result<(), String> {
     result
 }
 
-fn write_loop(viewer: Arc<ViewerConn>, mut w: BufWriter<TcpStream>) {
+/// A device on the home network asks for a key to connect from the internet.
+fn pair(server: &Server, request: Pair, address: &str, write: &mut Writer) -> Result<(), String> {
+    let settings = server.settings();
+    let reply = if !settings.remote_enabled {
+        Message::Error(ErrorMsg {
+            message: "Internet access is off on this capture server. Turn on \"Allow connections from the internet\" \
+                      on its setup page, on the capture PC, then try again."
+                .into(),
+        })
+    } else {
+        match server.devices.pair(&request.device, address) {
+            Ok(key) => Message::Paired(Paired { key_id: key.id_hex(), key: key.key_hex(), internet_address: settings.remote_address }),
+            Err(e) => Message::Error(ErrorMsg { message: format!("can't make a key: {e}") }),
+        }
+    };
+    write_message(write, &reply, now_100ns()).map_err(|e| e.to_string())?;
+    write.flush().map_err(|e| e.to_string())
+}
+
+fn write_loop(viewer: Arc<ViewerConn>, mut w: Writer) {
     let mut last_sent = std::time::Instant::now();
     loop {
         let (messages, audio, video, gap) = {
@@ -234,6 +335,21 @@ fn write_loop(viewer: Arc<ViewerConn>, mut w: BufWriter<TcpStream>) {
         if result.is_err() {
             viewer.shut();
             return;
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_home;
+
+    #[test]
+    fn home_addresses() {
+        for home in ["127.0.0.1", "192.168.99.82", "10.0.0.5", "172.20.1.1", "169.254.3.4", "::1", "fd12::1", "fe80::1", "::ffff:192.168.1.2"] {
+            assert!(is_home(home.parse().unwrap()), "{home}");
+        }
+        for away in ["8.8.8.8", "100.64.1.2", "172.32.0.1", "2001:db8::1", "::ffff:1.1.1.1"] {
+            assert!(!is_home(away.parse().unwrap()), "{away}");
         }
     }
 }

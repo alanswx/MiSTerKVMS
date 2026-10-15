@@ -1,7 +1,8 @@
 //! Configuration: `capture.json` (streams, written by the setup page) and
 //! `capture.ini` (the few things a person may edit by hand: ports, LAN
-//! access to the setup page, the setup password). Forgot the password?
-//! Delete its line in `capture.ini` and restart.
+//! access to the setup page, the setup password, internet access). Forgot
+//! the password? Delete its line in `capture.ini` and restart. Paired
+//! devices are in `devices.json` (devices.rs).
 
 use std::path::{Path, PathBuf};
 
@@ -60,11 +61,25 @@ pub struct Settings {
     pub password: String,
     /// Offer the built-in test pattern (rainbow bars and a beep) as a card.
     pub test_pattern: bool,
+    /// Paired devices may connect from the internet (docs/IPHONE.md §3).
+    /// Off: only the home network, as before.
+    pub remote_enabled: bool,
+    /// How the internet reaches this PC ("myhome.example.org:5970"), handed
+    /// to devices when they pair.
+    pub remote_address: String,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { port: mkvm::DEFAULT_PORT, setup_port: mkvm::SETUP_PORT, allow_lan: false, password: String::new(), test_pattern: false }
+        Self {
+            port: mkvm::DEFAULT_PORT,
+            setup_port: mkvm::SETUP_PORT,
+            allow_lan: false,
+            password: String::new(),
+            test_pattern: false,
+            remote_enabled: false,
+            remote_address: String::new(),
+        }
     }
 }
 
@@ -85,6 +100,15 @@ allow_lan = false
 password =
 ; Offer a test pattern (rainbow bars and a beep) as a capture card (true/false).
 test_pattern = false
+
+[remote]
+; Let paired phones connect from the internet (true/false). Needs the
+; viewers' port forwarded to this PC on the router. Only changeable here or
+; on the setup page opened on this PC.
+enabled = false
+; How the internet reaches this PC, e.g. myhome.duckdns.org:5970. Handed to
+; phones when they pair; they can change it.
+address =
 ";
 
 /// The config folder: `MISTERKVMS_CAPTURE_CONFIG` if set; otherwise
@@ -159,6 +183,8 @@ pub fn parse_settings(text: &str) -> Settings {
             ("setup", "allow_lan") => s.allow_lan = matches!(value.to_lowercase().as_str(), "true" | "yes" | "1" | "on"),
             ("setup", "password") => s.password = value.to_string(),
             ("setup", "test_pattern") => s.test_pattern = matches!(value.to_lowercase().as_str(), "true" | "yes" | "1" | "on"),
+            ("remote", "enabled") => s.remote_enabled = matches!(value.to_lowercase().as_str(), "true" | "yes" | "1" | "on"),
+            ("remote", "address") => s.remote_address = value.to_string(),
             _ => {}
         }
     }
@@ -211,8 +237,21 @@ mod tests {
 
     #[test]
     fn parses_values_and_ignores_junk() {
-        let s = parse_settings("[server]\nport=6000\n[setup]\n allow_lan = Yes \npassword = hunter 2\nnonsense\n[other]\nport=1");
-        assert_eq!(s, Settings { port: 6000, setup_port: 5971, allow_lan: true, password: "hunter 2".into(), test_pattern: false });
+        let s = parse_settings(
+            "[server]\nport=6000\n[setup]\n allow_lan = Yes \npassword = hunter 2\nnonsense\n[other]\nport=1\n[remote]\nenabled = on\naddress = home.example.org:5970",
+        );
+        assert_eq!(
+            s,
+            Settings {
+                port: 6000,
+                setup_port: 5971,
+                allow_lan: true,
+                password: "hunter 2".into(),
+                test_pattern: false,
+                remote_enabled: true,
+                remote_address: "home.example.org:5970".into(),
+            }
+        );
     }
 
     #[test]

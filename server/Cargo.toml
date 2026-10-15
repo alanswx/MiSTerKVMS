@@ -21,6 +21,7 @@ mdns-sd = "0.13"
 tiny_http = "0.12"
 ureq = { version = "3", features = ["json"] }
 sha2 = "0.10"
+if-addrs = "0.13"
 
 [target.'cfg(windows)'.dependencies]
 windows-service = "0.8"
