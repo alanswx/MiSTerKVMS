@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Build the Linux app (GTK 4 + libadwaita) and the misterkvms-cli CLI, and package
-# them as build/MiSTerKVMS-<version>-linux-<arch>.tar.gz.
+# Build the Linux app (GTK 4 + libadwaita), the misterkvms-cli CLI and the
+# misterkvms-capture server, and package them as
+# build/MiSTerKVMS-<version>-linux-<arch>.tar.gz.
 # Usage: scripts/build-linux.sh [--run]
 #
 # Needs: Rust, pkg-config, GTK 4.14+ and libadwaita 1.5+ development files,
@@ -15,14 +16,14 @@ ARCH=$(uname -m)
 cd "$ROOT"
 
 echo "==> Build $VERSION ($ARCH)"
-cargo build --release -p kvms-linux -p kvms-cli
+cargo build --release -p kvms-linux -p kvms-cli -p misterkvms-capture
 TARGET_DIR=$(cargo metadata --format-version 1 --no-deps | sed -n 's/.*"target_directory":"\([^"]*\)".*/\1/p')
 
 NAME="MiSTerKVMS-$VERSION-linux-$ARCH"
 OUT="build/$NAME"
 rm -rf "$OUT"
 mkdir -p "$OUT"
-cp "$TARGET_DIR/release/misterkvms" "$TARGET_DIR/release/misterkvms-cli" "$OUT/"
+cp "$TARGET_DIR/release/misterkvms" "$TARGET_DIR/release/misterkvms-cli" "$TARGET_DIR/release/misterkvms-capture" "$OUT/"
 ln -sf misterkvms-cli "$OUT/kvms" # old name, kept for one release
 cp -r linux/data/icons "$OUT/icons"
 cp linux/data/io.github.misterkvms.MiSTerKVMS.desktop "$OUT/"
@@ -33,7 +34,7 @@ cat > "$OUT/install.sh" <<'INSTALL'
 set -e
 HERE=$(cd "$(dirname "$0")" && pwd)
 mkdir -p ~/.local/bin ~/.local/share/applications ~/.local/share/icons
-cp "$HERE/misterkvms" "$HERE/misterkvms-cli" ~/.local/bin/
+cp "$HERE/misterkvms" "$HERE/misterkvms-cli" "$HERE/misterkvms-capture" ~/.local/bin/
 ln -sf misterkvms-cli ~/.local/bin/kvms
 cp -r "$HERE/icons/hicolor" ~/.local/share/icons/
 cp "$HERE/io.github.misterkvms.MiSTerKVMS.desktop" ~/.local/share/applications/

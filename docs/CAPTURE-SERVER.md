@@ -52,7 +52,7 @@ clients' local capture and the CLI run the same code:
 
 | Crate | Kind | Contents | Used by |
 |---|---|---|---|
-| `capture/` | lib | One `VideoCapture` over per-OS backends: Media Foundation (USB sticks), DirectShow (cards Media Foundation can't open, e.g. GC573, including their audio pin), AVFoundation (macOS), V4L2 (Linux, later); audio via `cpal`; stable device IDs; "in use by another app" detection | server, core (local capture), CLI |
+| `capture/` | lib | One `VideoCapture` over per-OS backends: Media Foundation (USB sticks), DirectShow (cards Media Foundation can't open, e.g. GC573, including their audio pin), AVFoundation (macOS), V4L2 (Linux, raw ioctls, MJPEG passed through); audio via `cpal`; stable device IDs; "in use by another app" detection | server, core (local capture), CLI |
 | `codec/` | lib | JPEG decode (`zune-jpeg`) and encode (`turbojpeg`); H.264 encode/decode through the OS (Media Foundation, VideoToolbox, VA-API) and `openh264`; scaling (integer box, area) | server, core |
 | `mkvm/` | lib | protocol types, frame parser, client and server connection state machines, control token logic | server, core, CLI, later the OBS plugin |
 | `server/` | bin `misterkvms-capture` | streams, viewers, pipelines, mrext sessions, setup page, service install | — |

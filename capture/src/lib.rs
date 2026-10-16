@@ -5,8 +5,7 @@
 //!
 //! Video backends: Media Foundation (Windows), with DirectShow for cards
 //! Media Foundation can't open (AVerMedia GC573 and other PCIe cards);
-//! AVFoundation (macOS). V4L2 (Linux) comes later; there `devices()` is
-//! empty for now.
+//! AVFoundation (macOS); V4L2 (Linux).
 //! Audio goes through `cpal` everywhere.
 
 pub mod audio;
@@ -18,6 +17,8 @@ mod ds;
 #[cfg(windows)]
 mod mf;
 pub mod pattern;
+#[cfg(target_os = "linux")]
+mod v4l2;
 
 use std::fmt;
 use std::time::Duration;
@@ -159,7 +160,9 @@ pub fn devices() -> Result<Vec<VideoDevice>, CaptureError> {
     };
     #[cfg(target_os = "macos")]
     let mut list = avf::devices()?;
-    #[cfg(not(any(windows, target_os = "macos")))]
+    #[cfg(target_os = "linux")]
+    let mut list = v4l2::devices()?;
+    #[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
     let mut list = Vec::new();
     if pattern::listed() {
         list.push(pattern::device());
@@ -181,6 +184,8 @@ enum Inner {
     Ds(ds::Reader),
     #[cfg(target_os = "macos")]
     Avf(avf::Reader),
+    #[cfg(target_os = "linux")]
+    V4l2(v4l2::Reader),
     Pattern(pattern::Pattern),
 }
 
@@ -237,7 +242,14 @@ impl VideoCapture {
             let (reader, format) = avf::Reader::open(id, format, output)?;
             Ok(Self { inner: Inner::Avf(reader), format, audio: None })
         }
-        #[cfg(not(any(windows, target_os = "macos")))]
+        #[cfg(target_os = "linux")]
+        {
+            // Card audio on Linux is a normal ALSA input.
+            let _ = audio;
+            let (reader, format) = v4l2::Reader::open(id, format, output)?;
+            Ok(Self { inner: Inner::V4l2(reader), format, audio: None })
+        }
+        #[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
         {
             let _ = (format, output, audio);
             Err(CaptureError::Unsupported("video capture isn't available on this system yet".into()))
@@ -259,6 +271,8 @@ impl VideoCapture {
             Inner::Ds(reader) => reader.next_frame(timeout),
             #[cfg(target_os = "macos")]
             Inner::Avf(reader) => reader.next_frame(timeout),
+            #[cfg(target_os = "linux")]
+            Inner::V4l2(reader) => reader.next_frame(timeout),
             Inner::Pattern(p) => Ok(p.next_frame(timeout)),
         }
     }

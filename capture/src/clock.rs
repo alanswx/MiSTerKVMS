@@ -9,13 +9,13 @@ pub fn now_100ns() -> i64 {
 /// Turns a device's own timestamps (arbitrary origin) into wall-clock ones
 /// without adding the jitter of "time of arrival": the offset is taken from
 /// the first sample and re-taken if the two drift apart.
-#[cfg_attr(not(windows), allow(dead_code))]
+#[cfg_attr(not(any(windows, target_os = "linux")), allow(dead_code))]
 #[derive(Default)]
 pub(crate) struct DeviceClock {
     offset: Option<i64>,
 }
 
-#[cfg_attr(not(windows), allow(dead_code))]
+#[cfg_attr(not(any(windows, target_os = "linux")), allow(dead_code))]
 impl DeviceClock {
     pub(crate) fn wall(&mut self, device_ts: i64) -> i64 {
         let now = now_100ns();

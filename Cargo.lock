@@ -1687,6 +1687,7 @@ dependencies = [
  "block2",
  "cpal",
  "dispatch2",
+ "libc",
  "objc2",
  "objc2-av-foundation",
  "objc2-core-media",
