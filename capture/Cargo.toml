@@ -45,3 +45,7 @@ objc2-core-media = { version = "0.3", features = ["CMSampleBuffer", "CMFormatDes
 objc2-core-video = { version = "0.3", features = ["CVPixelBuffer", "CVImageBuffer", "CVBuffer", "CVReturn", "CVPixelFormatDescription"] }
 dispatch2 = "0.3"
 block2 = "0.6"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+linuxvideo = "0.3"
+libc = "0.2"

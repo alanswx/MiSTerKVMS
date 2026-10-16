@@ -34,15 +34,19 @@ struct Cli {
 enum Cmd {
     /// Run the server (the default).
     Serve {
-        /// Started by the Windows Service Control Manager.
+        /// Started as the service (Windows Service Control Manager, systemd).
         #[arg(long, hide = true)]
         service: bool,
     },
-    /// Run in the background at boot: install|uninstall|start|stop|restart|status (Windows).
+    /// Run in the background at boot: install|uninstall|start|stop|restart|status
+    /// (Windows service; Linux systemd service, as root).
     Service {
         #[arg(value_enum)]
         action: service::Action,
     },
+    /// The systemd unit for a program at `bin` (for packaging).
+    #[command(hide = true)]
+    SystemdUnit { bin: String },
     /// List capture cards, their formats, and audio inputs (JSON).
     Devices,
     /// Show the configured streams (JSON).
@@ -159,6 +163,13 @@ fn main() {
         Cmd::Serve { service: true } => service::run(dir),
         Cmd::Serve { service: false } => serve(dir, false),
         Cmd::Service { action } => service::cli(&dir, action),
+        #[cfg(target_os = "linux")]
+        Cmd::SystemdUnit { bin } => {
+            print!("{}", service::unit_text(&bin));
+            Ok(())
+        }
+        #[cfg(not(target_os = "linux"))]
+        Cmd::SystemdUnit { .. } => Err("systemd units are for Linux".into()),
         Cmd::Devices => devices(),
         Cmd::List => {
             println!("{}", serde_json::to_string_pretty(&config::load_streams(&dir)).unwrap());

@@ -23,6 +23,9 @@ ureq = { version = "3", features = ["json"] }
 sha2 = "0.10"
 if-addrs = "0.13"
 
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = "0.2"
+
 [target.'cfg(windows)'.dependencies]
 windows-service = "0.8"
 windows = { version = "0.62", features = [

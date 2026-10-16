@@ -1,6 +1,7 @@
-//! Running in the background: a Windows service started at boot
-//! (docs/CAPTURE-SERVER.md §5.3). The setup page installs, starts, stops and
-//! removes it; the same actions are `misterkvms-capture service …`.
+//! Running in the background: a Windows service, or on Linux a systemd
+//! service, started at boot (docs/CAPTURE-SERVER.md §5.3). The setup page
+//! installs, starts, stops and removes it; the same actions are
+//! `misterkvms-capture service …`. The Linux side is in `linux` below.
 //!
 //! The service runs `misterkvms-capture serve --service --config <dir>` as
 //! LocalSystem, so it shares the config folder with a copy started by
@@ -49,8 +50,13 @@ impl Action {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Status {
-    /// This OS has a service we manage (Windows only, for now).
+    /// This OS has a service we manage (Windows, Linux with systemd).
     pub supported: bool,
+    /// "windows" or "linux": the page's wording.
+    pub platform: String,
+    /// Linux: the command that does what the page can't (it has no way to
+    /// ask for the administrator password), e.g. `sudo … service install`.
+    pub command: String,
     pub installed: bool,
     /// "running", "stopped", "starting", "stopping", or "" when not installed.
     pub state: String,
@@ -63,7 +69,7 @@ pub struct Status {
 #[cfg(windows)]
 pub use win::*;
 
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "linux")))]
 mod other {
     use super::*;
 
@@ -71,7 +77,15 @@ mod other {
         false
     }
     pub fn status() -> Status {
-        Status { supported: false, installed: false, state: String::new(), this_is_service: false, exe: String::new() }
+        Status {
+            supported: false,
+            platform: std::env::consts::OS.into(),
+            command: String::new(),
+            installed: false,
+            state: String::new(),
+            this_is_service: false,
+            exe: String::new(),
+        }
     }
     pub fn run(_dir: PathBuf) -> Result<(), String> {
         Err("running as a service is only supported on Windows for now".into())
@@ -95,8 +109,279 @@ mod other {
     pub fn open_browser(_url: &str) {}
 }
 
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "linux")))]
 pub use other::*;
+
+#[cfg(target_os = "linux")]
+pub use linux::*;
+
+/// Linux: a systemd system service running as its own `misterkvms` user (in
+/// the `video` and `audio` groups, for the cards and their sound), config in
+/// /var/lib/misterkvms-capture. `misterkvms-capture service install` (as
+/// root) sets it up from a downloaded program; the .deb ships the same unit
+/// and sets it up on install. Changing it needs root, which a web page can't
+/// ask for: the page uses pkexec where a desktop offers it, and otherwise
+/// shows the command. Restart works from the service itself (it exits;
+/// systemd starts it again).
+#[cfg(target_os = "linux")]
+mod linux {
+    use super::*;
+    use std::process::Command;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    use crate::log;
+
+    pub const UNIT: &str = "misterkvms-capture.service";
+    const UNIT_PATHS: [&str; 2] = ["/etc/systemd/system/misterkvms-capture.service", "/lib/systemd/system/misterkvms-capture.service"];
+    const OWN_UNIT: &str = "/etc/systemd/system/misterkvms-capture.service";
+    pub const USER: &str = "misterkvms";
+    pub const DIR: &str = "/var/lib/misterkvms-capture";
+    const LOCAL_BIN: &str = "/usr/local/bin/misterkvms-capture";
+    /// Where the .deb puts the program (its unit points here).
+    const PACKAGED_BIN: &str = "/usr/bin/misterkvms-capture";
+
+    static AS_SERVICE: AtomicBool = AtomicBool::new(false);
+
+    /// The unit, for `service install` and the .deb (scripts/package-capture-deb.sh
+    /// writes this text through `misterkvms-capture service unit`).
+    pub fn unit_text(bin: &str) -> String {
+        format!(
+            "[Unit]
+Description=MiSTerKVMS Capture (capture card streams for MiSTerKVMS)
+Documentation=https://github.com/danifunker/MiSTerKVMS
+After=network-online.target sound.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart={bin} serve --service --config {DIR}
+User={USER}
+Group={USER}
+SupplementaryGroups=video audio
+Restart=always
+RestartSec=2
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ReadWritePaths={DIR}
+
+[Install]
+WantedBy=multi-user.target
+"
+        )
+    }
+
+    fn unit_path() -> Option<&'static str> {
+        UNIT_PATHS.into_iter().find(|p| Path::new(p).exists())
+    }
+
+    fn exe() -> String {
+        std::env::current_exe().map(|p| p.display().to_string()).unwrap_or_else(|_| "misterkvms-capture".into())
+    }
+
+    fn systemctl(args: &[&str]) -> Result<String, String> {
+        let out = Command::new("systemctl").args(args).output().map_err(|e| format!("systemctl: {e}"))?;
+        let text = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        if out.status.success() {
+            Ok(text)
+        } else {
+            let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
+            Err(if err.is_empty() { format!("systemctl {} failed", args.join(" ")) } else { err })
+        }
+    }
+
+    fn is_root() -> bool {
+        unsafe { libc::geteuid() == 0 }
+    }
+
+    pub fn running_as_service() -> bool {
+        AS_SERVICE.load(Ordering::Relaxed)
+    }
+
+    pub fn status() -> Status {
+        let installed = unit_path().is_some();
+        let state = if installed {
+            match Command::new("systemctl").args(["is-active", UNIT]).output() {
+                Ok(o) => match String::from_utf8_lossy(&o.stdout).trim() {
+                    "active" => "running",
+                    "activating" | "reloading" => "starting",
+                    "deactivating" => "stopping",
+                    _ => "stopped",
+                }
+                .to_string(),
+                Err(_) => String::new(),
+            }
+        } else {
+            String::new()
+        };
+        let bin = unit_path()
+            .and_then(|p| std::fs::read_to_string(p).ok())
+            .and_then(|t| t.lines().find_map(|l| l.strip_prefix("ExecStart=").map(|s| s.split_whitespace().next().unwrap_or("").to_string())))
+            .unwrap_or_default();
+        let command = if installed { "sudo systemctl".to_string() } else { format!("sudo {} service install", exe()) };
+        Status {
+            supported: Path::new("/run/systemd/system").exists(),
+            platform: "linux".into(),
+            command,
+            installed,
+            state,
+            this_is_service: running_as_service(),
+            exe: bin,
+        }
+    }
+
+    /// `serve --service`, started by systemd: the normal server (it logs to
+    /// stderr, which goes to the journal).
+    pub fn run(dir: PathBuf) -> Result<(), String> {
+        AS_SERVICE.store(true, Ordering::Relaxed);
+        crate::serve(dir, true)
+    }
+
+    /// The home folder of whoever ran sudo (their streams carry over).
+    fn sudo_user_config() -> Option<PathBuf> {
+        let user = std::env::var("SUDO_USER").ok().filter(|u| !u.is_empty() && u != "root")?;
+        let out = Command::new("getent").args(["passwd", &user]).output().ok()?;
+        let line = String::from_utf8_lossy(&out.stdout).to_string();
+        let home = line.trim().split(':').nth(5)?.to_string();
+        Some(PathBuf::from(home).join(".config/misterkvms-capture"))
+    }
+
+    fn group_exists(group: &str) -> bool {
+        Command::new("getent").args(["group", group]).output().is_ok_and(|o| o.status.success())
+    }
+
+    fn run_ok(cmd: &str, args: &[&str]) -> Result<(), String> {
+        let out = Command::new(cmd).args(args).output().map_err(|e| format!("{cmd}: {e}"))?;
+        if out.status.success() {
+            Ok(())
+        } else {
+            Err(format!("{cmd} {}: {}", args.join(" "), String::from_utf8_lossy(&out.stderr).trim()))
+        }
+    }
+
+    fn install(dir: &Path) -> Result<(), String> {
+        // The service's own user, in the groups that may use cards and sound.
+        let groups: Vec<&str> = ["video", "audio"].into_iter().filter(|g| group_exists(g)).collect();
+        if Command::new("id").args(["-u", USER]).output().is_ok_and(|o| o.status.success()) {
+            for g in &groups {
+                let _ = run_ok("usermod", &["-aG", g, USER]);
+            }
+        } else {
+            let mut args = vec!["--system", "--home-dir", DIR, "--no-create-home", "--shell", "/usr/sbin/nologin", "--user-group"];
+            let list = groups.join(",");
+            if !groups.is_empty() {
+                args.extend(["--groups", &list]);
+            }
+            args.push(USER);
+            run_ok("useradd", &args)?;
+        }
+        // Its config folder; the streams set up by hand so far carry over.
+        let target = Path::new(DIR);
+        std::fs::create_dir_all(target).map_err(|e| format!("{DIR}: {e}"))?;
+        if !target.join("capture.json").exists() {
+            for from in [Some(dir.to_path_buf()), sudo_user_config()].into_iter().flatten() {
+                if from != target && from.join("capture.json").exists() {
+                    for f in ["capture.json", "capture.ini", "devices.json", "server-id"] {
+                        let _ = std::fs::copy(from.join(f), target.join(f));
+                    }
+                    println!("copied the streams and settings from {}", from.display());
+                    break;
+                }
+            }
+        }
+        run_ok("chown", &["-R", &format!("{USER}:{USER}"), DIR])?;
+        run_ok("chmod", &["750", DIR])?;
+        // The program: the .deb's, or a copy of this one.
+        let bin = if exe() == PACKAGED_BIN {
+            PACKAGED_BIN.to_string()
+        } else {
+            if exe() != LOCAL_BIN {
+                std::fs::copy(exe(), LOCAL_BIN).map_err(|e| format!("copying the program to {LOCAL_BIN}: {e}"))?;
+                run_ok("chmod", &["755", LOCAL_BIN])?;
+            }
+            LOCAL_BIN.to_string()
+        };
+        if unit_path() != Some(UNIT_PATHS[1]) {
+            std::fs::write(OWN_UNIT, unit_text(&bin)).map_err(|e| format!("{OWN_UNIT}: {e}"))?;
+        }
+        systemctl(&["daemon-reload"])?;
+        systemctl(&["enable", "--now", UNIT])?;
+        println!("MiSTerKVMS Capture runs as a service now (user {USER}, config {DIR}).");
+        println!("Setup page: http://localhost:{}", crate::config::load_settings(target).setup_port);
+        Ok(())
+    }
+
+    fn uninstall() -> Result<(), String> {
+        if unit_path() == Some(UNIT_PATHS[1]) {
+            return Err("installed by the .deb package: remove it with `sudo apt remove misterkvms-capture`".into());
+        }
+        let _ = systemctl(&["disable", "--now", UNIT]);
+        let _ = std::fs::remove_file(OWN_UNIT);
+        systemctl(&["daemon-reload"])?;
+        println!("The service is removed. Its settings stay in {DIR}; the user {USER} and {LOCAL_BIN} too.");
+        println!("To remove those as well: sudo userdel {USER}; sudo rm -r {DIR} {LOCAL_BIN}");
+        Ok(())
+    }
+
+    pub fn cli(dir: &Path, action: Action) -> Result<(), String> {
+        if action != Action::Status && !is_root() {
+            return Err(format!("this needs root: sudo {} service {}", exe(), action.arg()));
+        }
+        match action {
+            Action::Install => install(dir),
+            Action::Uninstall => uninstall(),
+            Action::Start => systemctl(&["start", UNIT]).map(|_| ()),
+            Action::Stop => systemctl(&["stop", UNIT]).map(|_| ()),
+            Action::Restart => systemctl(&["restart", UNIT]).map(|_| ()),
+            Action::Status => {
+                println!("{}", serde_json::to_string_pretty(&status()).unwrap_or_default());
+                Ok(())
+            }
+        }
+    }
+
+    /// From the setup page (never root): the service restarts itself; other
+    /// actions ask through pkexec on a desktop, or say what to run.
+    pub fn request(_dir: &Path, action: Action) -> Result<(), String> {
+        if running_as_service() && action == Action::Restart {
+            log("restarting (systemd starts the service again)");
+            std::thread::spawn(|| {
+                std::thread::sleep(std::time::Duration::from_millis(300));
+                std::process::exit(0);
+            });
+            return Ok(());
+        }
+        let graphical = std::env::var_os("DISPLAY").is_some() || std::env::var_os("WAYLAND_DISPLAY").is_some();
+        let pkexec = Command::new("sh").args(["-c", "command -v pkexec"]).output().is_ok_and(|o| o.status.success());
+        if graphical && pkexec && !running_as_service() {
+            return run_ok("pkexec", &[&exe(), "service", action.arg()]);
+        }
+        let command = match action {
+            Action::Install => format!("sudo {} service install", exe()),
+            Action::Uninstall => {
+                let installed = status().exe;
+                format!("sudo {} service uninstall", if installed.is_empty() { exe() } else { installed })
+            }
+            other => format!("sudo systemctl {} {UNIT}", other.arg()),
+        };
+        Err(format!("run this on the capture PC: {command}"))
+    }
+
+    pub fn started_from_explorer() -> bool {
+        false
+    }
+    pub fn no_throttling() {}
+    pub fn update_download_path() -> Option<PathBuf> {
+        None
+    }
+    pub fn install_from(_exe: &Path, _dir: &Path) -> Result<(), String> {
+        Err("on Linux, install the new .deb or run the new program's `sudo misterkvms-capture service install`".into())
+    }
+    pub fn open_browser(url: &str) {
+        let _ = Command::new("xdg-open").arg(url).spawn();
+    }
+}
 
 #[cfg(windows)]
 mod win {
@@ -160,7 +445,15 @@ mod win {
     }
 
     pub fn status() -> Status {
-        let mut st = Status { supported: true, installed: false, state: String::new(), this_is_service: running_as_service(), exe: String::new() };
+        let mut st = Status {
+            supported: true,
+            platform: "windows".into(),
+            command: String::new(),
+            installed: false,
+            state: String::new(),
+            this_is_service: running_as_service(),
+            exe: String::new(),
+        };
         let Ok(manager) = ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT) else { return st };
         let Ok(service) = manager.open_service(NAME, ServiceAccess::QUERY_STATUS | ServiceAccess::QUERY_CONFIG) else { return st };
         st.installed = true;

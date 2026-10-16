@@ -16,8 +16,8 @@ You also need:
 
 - [mrext Remote](https://github.com/wizzomafizzo/mrext) running on each MiSTer.
 - Video, one of:
-  - **MiSTerKVMS Capture** (`misterkvms-capture`) on the PC with the capture card(s). It streams each card as `mkvm://<pc>/<stream>`, found on the network automatically. Set it up at `http://<pc>:5971`; on Windows it installs itself as a service from that page and updates itself from GitHub releases. See [docs/CAPTURE-SERVER.md](docs/CAPTURE-SERVER.md).
-  - A capture card plugged into this computer (Windows and macOS; not Linux yet).
+  - **MiSTerKVMS Capture** (`misterkvms-capture`) on the PC with the capture card(s). It streams each card as `mkvm://<pc>/<stream>`, found on the network automatically. Set it up at `http://<pc>:5971`; on Windows it installs itself as a service from that page and updates itself from GitHub releases. On Linux (x86_64), `sudo apt install ./misterkvms-capture-<version>-linux-amd64.deb` runs it as a service at boot (or use the tarball: `sudo ./misterkvms-capture service install`). See [docs/CAPTURE-SERVER.md](docs/CAPTURE-SERVER.md).
+  - A capture card plugged into this computer (the Windows and macOS apps; on Linux, the capture server and `misterkvms-cli --local` can use it, the app not yet).
 
 No NDI runtime, OBS or DistroAV is needed. Saved hosts from older versions that used NDI become capture hosts: when you open one, the app finds the capture stream that shows the same MiSTer address and saves it.
 

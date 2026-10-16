@@ -52,7 +52,7 @@ clients' local capture and the CLI run the same code:
 
 | Crate | Kind | Contents | Used by |
 |---|---|---|---|
-| `capture/` | lib | One `VideoCapture` over per-OS backends: Media Foundation (USB sticks), DirectShow (cards Media Foundation can't open, e.g. GC573, including their audio pin), AVFoundation (macOS), V4L2 (Linux, later); audio via `cpal`; stable device IDs; "in use by another app" detection | server, core (local capture), CLI |
+| `capture/` | lib | One `VideoCapture` over per-OS backends: Media Foundation (USB sticks), DirectShow (cards Media Foundation can't open, e.g. GC573, including their audio pin), AVFoundation (macOS), V4L2 (Linux, `linuxvideo`: MJPEG, YUYV, NV12, BGRX); audio via `cpal` (ALSA on Linux); stable device IDs; "in use by another app" detection | server, core (local capture), CLI |
 | `codec/` | lib | JPEG decode (`zune-jpeg`) and encode (`turbojpeg`); H.264 encode/decode through the OS (Media Foundation, VideoToolbox, VA-API) and `openh264`; scaling (integer box, area) | server, core |
 | `mkvm/` | lib | protocol types, frame parser, client and server connection state machines, control token logic | server, core, CLI, later the OBS plugin |
 | `server/` | bin `misterkvms-capture` | streams, viewers, pipelines, mrext sessions, setup page, service install | — |
@@ -157,7 +157,7 @@ One TCP connection per viewer per stream, `TCP_NODELAY`. No TLS on the LAN.
 |---|---|---|
 | Windows | Windows service (LocalSystem), at boot | Works from session 0: C3 below. Installed from the setup page. |
 | macOS | Background agent at login (`SMAppService`, registered by the app) | Camera/Microphone permission only exists in a user session, so not a boot-time daemon. A headless Mac needs auto-login. |
-| Linux | systemd system service | Service user in the `video` and `audio` groups. |
+| Linux | systemd system service | Its own user, `misterkvms`, in the `video` and `audio` groups; config in `/var/lib/misterkvms-capture`. `sudo misterkvms-capture service install` (tarball) or the `.deb` sets it up; the page shows its state and the commands (it can't ask for the root password; pkexec on a desktop). Restart from the page works (systemd starts it again). |
 
 #### Windows service: what C3 found (October 2026, DANIHTPC)
 
@@ -260,12 +260,20 @@ The installer adds the firewall rules.
 - **macOS:** one signed, notarised app, "MiSTerKVMS Capture.app". First
   launch asks for Camera and Microphone, registers the background agent and
   opens the setup page; the menu-bar icon stays.
-- **Linux:** `.deb` and `.rpm` with the systemd unit and group setup; a
-  tarball with `install.sh` for others.
+- **Linux (x86_64):** `misterkvms-capture-<ver>-linux-amd64.deb` (the
+  program in /usr/bin, the systemd unit, the `misterkvms` user; starts the
+  service on install, restarts it on upgrade, purge removes the user and
+  settings), and `misterkvms-capture-<ver>-linux-x86_64.tar.gz` (the program
+  and a README; `sudo ./misterkvms-capture service install` copies it to
+  /usr/local/bin and sets up the same service, carrying over streams set up
+  by hand). Updates: install the newer .deb (the page says so; it can't
+  replace a root-owned program from the service's own user). CI installs the
+  .deb on an Ubuntu runner and checks the service, and streams the test
+  pattern. `.rpm` and ARM64 (Raspberry Pi) later.
 - Config: `capture.json` in the config folder, written by the setup page
   (streams). Next to it `capture.ini` holds the few things a user may edit
   by hand: ports, `allow_lan` and the setup password.
-  The CLI (`misterkvms-capture devices | add | serve | install-service`)
+  The CLI (`misterkvms-capture devices | add | serve | service <action>`)
   stays for scripting.
 
 ## 6. Quality per viewer
@@ -385,8 +393,10 @@ the password and the test pattern; the tray icon and the installer are
 still to do. Recording from streams and local cards works in the apps'
 recorder and `misterkvms-cli record --stream/--local`. **C10** in part:
 NDI is gone (R5): its code, SETUP-NDI and the NDI release notes are
-removed, and saved NDI hosts migrate by MiSTer address (§8.1). The 1.0
-release itself is still to come.
+removed, and saved NDI hosts migrate by MiSTer address (§8.1). 1.0 is
+released. **C9** for Linux (October 2026): V4L2 capture, the systemd
+service and the .deb/tarball are in; checked in CI with the test pattern,
+not yet with a real card on Linux.
 
 Rough size: C0–C4 about two weeks; C5–C7 about two weeks; C8–C10 about two
 more. The biggest risks are C3 (cards, and capture from a Windows service)

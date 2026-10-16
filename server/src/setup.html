@@ -287,7 +287,7 @@ function renderDevices() {
       <div class="shot" id="dev-${btoa(unescape(encodeURIComponent(d.id))).replace(/[^a-z0-9]/gi, "")}"><div class="msg">${stream ? `Shown above as “${esc(stream.config.name)}”` : `<button data-preview="${esc(d.id)}">Show picture</button>`}</div></div>
       <div class="body">
         <div class="title">${esc(d.name)}${stream ? "" : `<button class="primary" data-use="${esc(d.id)}">Add as stream</button>`}</div>
-        <div class="row"><span>${d.formats.length ? `best: ${fmt(d.best)}` : `<span class="warn">no formats: in use by another app, or a card Windows Media Foundation can't open (some AVerMedia cards)</span>`}</span></div>
+        <div class="row"><span>${d.formats.length ? `best: ${fmt(d.best)}` : `<span class="warn">no formats: in use by another app${service && service.platform === "linux" ? ", or no permission (the video group)" : ", or a card Windows Media Foundation can't open (some AVerMedia cards)"}</span>`}</span></div>
         <div class="row"><span>audio: ${esc(d.audio || "none found")}</span></div>
       </div></div>`;
   }).join("");
@@ -530,7 +530,7 @@ $("saveRemoteAddress").onclick = async () => {
 };
 
 // Run in the background: the Windows service.
-let service = null, svcBusy = "";
+let service = null, svcBusy = "", svcError = "";
 
 async function loadService() {
   const r = await fetch("/api/service").then(r => r.json());
@@ -545,6 +545,7 @@ function renderService() {
   $("bgSection").hidden = false;
   const show = (id, on) => { $(id).hidden = !on; $(id).disabled = !s.local || !!svcBusy; };
   let status, hint;
+  if (s.platform === "linux") { renderLinuxService(s, show); return; }
   if (svcBusy) {
     status = `<span class="warn"><span class="dot warn"></span>${esc(svcBusy)}</span>`;
     hint = "";
@@ -566,6 +567,39 @@ function renderService() {
   show("svcRestart", s.thisIsService);
   show("svcStop", s.thisIsService);
   show("svcUninstall", s.installed);
+  $("updCheck").disabled = !!svcBusy;
+  $("allowLan").disabled = !s.local;
+  if (!s.local) $("allowLanHint").textContent = "This can only be changed on the capture PC itself.";
+}
+
+// Linux: a systemd service. The page can't ask for the administrator password
+// (except through pkexec on a desktop), so it shows the commands.
+function renderLinuxService(s, show) {
+  const unit = "misterkvms-capture";
+  let status, hint;
+  if (svcBusy) {
+    status = `<span class="warn"><span class="dot warn"></span>${esc(svcBusy)}</span>`;
+    hint = "";
+  } else if (s.thisIsService) {
+    status = `<span class="ok"><span class="dot ok"></span>Running as a service: starts with the PC, no need to log in.</span>`;
+    hint = `Program: <code>${esc(s.exe)}</code>, user <code>misterkvms</code>, settings in <code>/var/lib/misterkvms-capture</code>. Stop it with <code>sudo systemctl stop ${unit}</code>; remove it with <code>sudo ${esc(s.exe)} service uninstall</code> (or <code>sudo apt remove ${unit}</code> if it came from the .deb).`;
+  } else if (s.installed) {
+    status = `<span class="warn"><span class="dot warn"></span>Running by hand. The service is installed but ${esc(s.state || "not running")}.</span>`;
+    hint = `Stop this copy, then start the service: <code>sudo systemctl start ${unit}</code>.`;
+  } else {
+    status = `<span class="warn"><span class="dot warn"></span>Running by hand: stopping this program stops the streams.</span>`;
+    hint = `To keep the streams running, also after a restart: <code>${esc(s.command)}</code> (or install the .deb). It runs as its own user, <code>misterkvms</code>, in the video and audio groups; the streams set up here carry over.`;
+  }
+  if (!s.local && !s.thisIsService) hint = "Setting up the service only works on the capture PC itself.";
+  // What the page couldn't do itself, with the command that does it.
+  if (svcError) hint = `<span class="warn">${esc(svcError).replace(/: (sudo .*)$/, ": <code>$1</code>")}</span>`;
+  $("svcStatus").innerHTML = status;
+  $("svcHint").innerHTML = hint;
+  show("svcInstall", !s.installed);
+  show("svcStart", false);
+  show("svcRestart", s.thisIsService);
+  show("svcStop", false);
+  show("svcUninstall", false);
   $("updCheck").disabled = !!svcBusy;
   $("allowLan").disabled = !s.local;
   if (!s.local) $("allowLanHint").textContent = "This can only be changed on the capture PC itself.";
@@ -610,7 +644,10 @@ async function serviceAction(action, busy) {
     }
   } catch (e) {
     svcBusy = "";
-    if (e.message !== "cancelled") toast(e.message);
+    if (e.message !== "cancelled") {
+      if (s.platform === "linux") svcError = e.message;
+      else toast(e.message);
+    }
   }
   renderService();
 }
@@ -638,7 +675,10 @@ $("updCheck").onclick = async () => {
       $("updApply").textContent = `Update to ${update.latest}`;
       $("updNote").innerHTML = `${esc(update.latest)} is out; this is ${esc(update.current)}.${notes}`;
     } else {
-      $("updNote").innerHTML = `${esc(update.latest)} is out; this is ${esc(update.current)}. Download it from the release page and double-click it: it updates the service.${notes}`;
+      const how = service && service.platform === "linux"
+        ? "Download the new .deb (or tarball) from the release page and install it: <code>sudo apt install ./misterkvms-capture-…-linux-amd64.deb</code>."
+        : "Download it from the release page and double-click it: it updates the service.";
+      $("updNote").innerHTML = `${esc(update.latest)} is out; this is ${esc(update.current)}. ${how}${notes}`;
     }
   } catch (e) { $("updNote").textContent = "Can't check: " + e.message; }
 };

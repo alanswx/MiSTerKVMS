@@ -223,6 +223,52 @@ jobs:
           path: build/MiSTerKVMS-${{ env.VERSION }}-linux-x86_64.tar.gz
           archive: false
 
+      # MiSTerKVMS Capture for Linux: the program on its own (tarball) and a
+      # .deb with the systemd service.
+      - name: Capture server (test, build, package)
+        run: |
+          cargo test -p misterkvms-capture -p kvms-capture
+          cargo build --release -p misterkvms-capture
+          scripts/package-capture-linux.sh "$VERSION"
+
+      # No capture card on the runner: the test pattern stands in for one.
+      - name: Capture server smoke test (stream the test pattern)
+        run: |
+          cfg="$RUNNER_TEMP/capture"
+          mkdir -p "$cfg"
+          printf '[setup]\ntest_pattern = true\n' > "$cfg/capture.ini"
+          target/release/misterkvms-capture --config "$cfg" devices
+          target/release/misterkvms-capture --config "$cfg" add --video test:pattern Test
+          target/release/misterkvms-capture --config "$cfg" serve > "$RUNNER_TEMP/serve.log" 2>&1 &
+          pid=$!
+          for _ in $(seq 30); do (echo > /dev/tcp/127.0.0.1/5970) 2>/dev/null && break; sleep 1; done
+          out=$(target/release/misterkvms-cli stream mkvm://127.0.0.1/Test --duration 4s) || { cat "$RUNNER_TEMP/serve.log"; exit 1; }
+          kill "$pid"
+          echo "$out"
+          echo "$out" | python3 -c 'import json,sys; d=json.load(sys.stdin); assert d["fps"] > 20 and d["audio_peak"] > 0, d'
+
+      # The .deb for real: it makes the user, starts the service, and goes
+      # away cleanly.
+      - name: Capture server .deb (install, run as a service, remove)
+        run: |
+          sudo apt-get install -y "./build/misterkvms-capture-$VERSION-linux-amd64.deb"
+          for _ in $(seq 30); do curl -sf http://localhost:5971/api/state > /dev/null && break; sleep 1; done
+          systemctl is-active misterkvms-capture
+          id -nG misterkvms | grep -qw video
+          curl -sf http://localhost:5971/api/service | python3 -c 'import json,sys; s=json.load(sys.stdin)["service"]; print(s); assert s["supported"] and s["installed"] and s["thisIsService"] and s["state"] == "running", s'
+          sudo apt-get remove -y misterkvms-capture
+          if systemctl is-active misterkvms-capture; then echo "still running after remove"; exit 1; fi
+
+      - uses: actions/upload-artifact@v7
+        with:
+          path: build/misterkvms-capture-${{ env.VERSION }}-linux-x86_64.tar.gz
+          archive: false
+
+      - uses: actions/upload-artifact@v7
+        with:
+          path: build/misterkvms-capture-${{ env.VERSION }}-linux-amd64.deb
+          archive: false
+
   # The iPhone app. Pushes to main (and manual runs on main) archive it and
   # upload it to TestFlight when the App Store Connect key and the team id
   # are set; everything else only checks that it builds (for the simulator).
@@ -335,6 +381,8 @@ jobs:
           **Windows:** 64-bit Windows 10 or 11. Unzip \`MiSTerKVMS-$VERSION-win-x64.zip\` anywhere and run **MiSTerKVMS.exe**. Not code-signed yet: SmartScreen may warn the first time (More info → Run anyway). Recording needs [ffmpeg](https://ffmpeg.org) (\`winget install ffmpeg\`).
 
           **MiSTerKVMS Capture** (the PC with the capture cards): run \`misterkvms-capture.exe\` from the Windows zip (on the Mac: \`/Applications/MiSTerKVMS.app/Contents/MacOS/misterkvms-capture\`); its setup page opens at http://localhost:5971. Add a stream for each card there. On Windows, **Run in the background** installs it as a service that starts with the PC, and **Check for updates** updates it from these releases (\`misterkvms-capture-$VERSION-win-x64.exe\`). In the app, add a host and pick the stream, or a capture card plugged into that computer (Windows and Mac).
+
+          **MiSTerKVMS Capture on Linux** (x86_64, systemd): \`sudo apt install ./misterkvms-capture-$VERSION-linux-amd64.deb\` on Debian/Ubuntu (it runs as a service at boot; set it up at http://localhost:5971), or unpack \`misterkvms-capture-$VERSION-linux-x86_64.tar.gz\` and run \`sudo ./misterkvms-capture service install\`. Capture cards through Video4Linux (USB sticks, cards with a V4L2 driver).
 
           **Linux:** x86_64, GNOME/KDE on Wayland (X11 works too); needs GTK 4.14+ and libadwaita 1.5+ (Ubuntu 24.04, Fedora 40 or newer). Unpack \`MiSTerKVMS-$VERSION-linux-x86_64.tar.gz\` and run \`./install.sh\` (or \`./misterkvms\` in place). Watches MiSTerKVMS Capture streams; recording needs ffmpeg.
 
