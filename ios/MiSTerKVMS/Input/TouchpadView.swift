@@ -6,7 +6,8 @@ import UIKit
 /// a relative touchpad (IPHONE.md §5.3):
 ///
 /// - one finger drag: move the mouse; tap: left click; two-finger tap: right
-///   click; tap then drag: hold the left button while dragging
+///   click; double tap: double click; tap then drag: click, then hold the
+///   left button while dragging
 /// - pinch: zoom the picture; two-finger drag: pan it
 /// - three-finger swipe left/right: next/previous MiSTer; three-finger tap:
 ///   the controls menu
@@ -101,6 +102,10 @@ final class TouchpadView: UIView, UIGestureRecognizerDelegate {
         switch g.state {
         case .began:
             lastDrag = p
+            // The tap before this press was held back to see whether a drag
+            // follows: click it now, so a double tap is a double click and
+            // tap-and-drag is click, then drag.
+            model?.click(.left)
             model?.button(.left, down: true)
         case .changed:
             let (dx, dy) = accelerated(CGPoint(x: p.x - lastDrag.x, y: p.y - lastDrag.y))

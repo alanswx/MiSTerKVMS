@@ -679,6 +679,16 @@ impl Controller {
         }
     }
 
+    /// Press and release a button, in order with whatever is sent next (a
+    /// touch screen's tap: a second tap or a drag can't overtake it).
+    pub fn click(&self, button: MouseButton) {
+        if let Some(s) = self.input_session() {
+            s.mouse_button(button, true);
+            s.delay(40);
+            s.mouse_button(button, false);
+        }
+    }
+
     pub fn release_all(&self) {
         if let Some(s) = self.input_session() {
             s.release_all();

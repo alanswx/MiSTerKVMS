@@ -309,10 +309,7 @@ final class AppModel: ObservableObject {
 
     func click(_ button: MouseButton) {
         guard ready() else { return }
-        core.mouseButton(button: button, down: true)
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.04) { [core] in
-            core.mouseButton(button: button, down: false)
-        }
+        core.click(button: button)
     }
 
     func zoom(by factor: Double) { core.zoomBy(factor: factor) }

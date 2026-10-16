@@ -228,7 +228,8 @@ Full screen, status bar and home indicator hidden. From top:
 | One finger drag | Move the mouse (relative, with acceleration) |
 | Tap | Left click |
 | Two-finger tap | Right click |
-| Double tap and drag | Hold the left button while dragging |
+| Double tap | Double click |
+| Tap, then press and drag | Click, then hold the left button while dragging (a single tap waits a moment to see whether a drag follows) |
 | Pinch | Zoom the video (pan with two fingers when zoomed) |
 | Three-finger swipe left/right | Next / previous MiSTer |
 | Three-finger tap | Show/hide the controls menu |
